@@ -1,0 +1,17 @@
+.DS_Store
+.env
+.venv/
+*.session
+*.session-journal
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.state/
+dist/
+build/
+*.egg-info/
+node_modules/
