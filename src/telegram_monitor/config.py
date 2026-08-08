@@ -8,6 +8,7 @@ from .models import MonitorConfig, SourceRule
 
 __all__ = ["CONFIG", "SourceRule"]
 
+# fmt: off
 CONFIG = MonitorConfig(
     sources=(
         # Filter a public discussion group by keyword or word fragment:
@@ -32,6 +33,7 @@ CONFIG = MonitorConfig(
         SourceRule(
             peer=-1001719510902,
             keywords=(
+                # ruff: ignore[E501]
                 "пасут", "намоту", "стоят", "їздят", "їздит", "паку", "зупин", "пиня", "перевір", "перекри", "поїх", "катают", "катає",
                 "кружля", "круг", "кол", "сторон",
                 "бус", "т5", "дасте", "берлі", "транзит", "джип", "чорн", "біл", "сір", "блях",
@@ -59,3 +61,4 @@ CONFIG = MonitorConfig(
     bot_subscriber_limit=10,
     timezone="Europe/Kyiv",
 )
+# fmt: on
