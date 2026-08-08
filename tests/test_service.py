@@ -133,6 +133,8 @@ async def test_event_flow_filters_enqueues_notifies_and_deduplicates() -> None:
     await monitor.handle_event(FakeEvent(announcements_id, 3, "", media=True))
     await monitor.handle_event(FakeEvent(-1009999999999, 4, "k8s"))
     await monitor.handle_event(FakeEvent(discussion_id, 5, "k8s", outgoing=True))
+    await monitor.handle_event(FakeEvent(discussion_id, 6, "Нова вакансія для k8s?  \n"))
+    await monitor.handle_event(FakeEvent(announcements_id, 7, "Що нового?"))
     await monitor._queue.join()
 
     assert len(notifier.sent) == 1

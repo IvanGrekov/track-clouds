@@ -4,8 +4,7 @@ import logging
 
 import pytest
 
-import telegram_monitor.cli as cli
-from telegram_monitor.cli import _DIFFERENCE_LOG_FILTER, _configure_logging
+from telegram_monitor.cli import _DIFFERENCE_LOG_FILTER, _check_text, _configure_logging
 from telegram_monitor.models import MonitorConfig, SourceRule
 
 
@@ -61,26 +60,23 @@ def test_configure_logging_hides_only_channel_difference_info(
 
 
 def test_check_text_applies_keywords_to_skip(
-    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(
-        cli,
-        "CONFIG",
-        MonitorConfig(
-            sources=(
-                SourceRule(
-                    peer="@chat",
-                    keywords=("k8s",),
-                    keywords_to_skip=("spam",),
-                ),
-            )
-        ),
+    config = MonitorConfig(
+        sources=(
+            SourceRule(
+                peer="@chat",
+                keywords=("k8s",),
+                keywords_to_skip=("spam",),
+            ),
+        )
     )
 
-    assert cli._check_text("k8s spam post") == 1
+    assert _check_text("k8s spam post", config) == 1
     assert capsys.readouterr().out == "SKIP  @chat: keywords_to_skip=spam\n"
-    assert cli._check_text("  k8s  ") == 1
+    assert _check_text("  k8s  ", config) == 1
     assert capsys.readouterr().out == "SKIP  @chat: fewer than 10 characters\n"
-    assert cli._check_text("k8s release") == 0
+    assert _check_text("k8s release", config) == 0
     assert capsys.readouterr().out == "MATCH @chat: k8s\n"
+    assert _check_text("is k8s released?  \n", config) == 1
+    assert capsys.readouterr().out == "SKIP  @chat: ends with ?\n"

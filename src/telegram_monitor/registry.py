@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from .matcher import KeywordMatcher, has_minimum_message_length
+from .matcher import KeywordMatcher, ends_with_question_mark, has_minimum_message_length
 from .models import ConfigurationError, ResolvedSource, SourceRule
 
 
@@ -102,7 +102,7 @@ class SourceRegistry:
 
     def matches(self, peer_id: int | None, text: str | None) -> tuple[str, ...] | None:
         source = self.get(peer_id)
-        if source is None or not has_minimum_message_length(text):
+        if source is None or ends_with_question_mark(text) or not has_minimum_message_length(text):
             return None
         matched = self._matchers[source.peer_id].find_matches(text)
         if not source.rule.notify_all and not matched:

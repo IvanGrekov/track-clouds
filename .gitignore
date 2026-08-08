@@ -1,5 +1,6 @@
 .DS_Store
 .env
+/config.toml
 .venv/
 *.session
 *.session-journal

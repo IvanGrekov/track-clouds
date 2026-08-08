@@ -12,10 +12,15 @@ from telethon.sessions import StringSession
 from . import __version__
 from .app import connect_authorized, run_monitor
 from .client import create_client, create_login_client
-from .config import CONFIG
+from .config import load_config
 from .credentials import TelegramCredentials
-from .matcher import MIN_MESSAGE_LENGTH, KeywordMatcher, has_minimum_message_length
-from .models import ConfigurationError
+from .matcher import (
+    MIN_MESSAGE_LENGTH,
+    KeywordMatcher,
+    ends_with_question_mark,
+    has_minimum_message_length,
+)
+from .models import ConfigurationError, MonitorConfig
 
 LOGGER = logging.getLogger(__name__)
 
@@ -50,7 +55,7 @@ def _build_parser() -> argparse.ArgumentParser:
     commands.add_parser("run", help="start the event-driven monitor (default)")
     commands.add_parser("list-chats", help="list dialogs available to the configured account")
     commands.add_parser("generate-session", help="interactively create a dedicated session string")
-    check = commands.add_parser("check", help="test hardcoded rules against text without Telegram")
+    check = commands.add_parser("check", help="test configured rules against text without Telegram")
     check.add_argument("text", help="message text to check")
     return parser
 
@@ -124,7 +129,7 @@ async def _list_chats() -> None:
         await client.disconnect()
 
 
-async def _run_monitor_with_signals() -> None:
+async def _run_monitor_with_signals(config: MonitorConfig) -> None:
     loop = asyncio.get_running_loop()
     current_task = asyncio.current_task()
     signal_installed = False
@@ -136,7 +141,7 @@ async def _run_monitor_with_signals() -> None:
             pass
 
     try:
-        await run_monitor()
+        await run_monitor(config)
     except asyncio.CancelledError:
         LOGGER.info("Stopped by signal")
     finally:
@@ -144,12 +149,12 @@ async def _run_monitor_with_signals() -> None:
             loop.remove_signal_handler(signal.SIGTERM)
 
 
-def _check_text(text: str) -> int:
-    if not CONFIG.sources:
-        raise ConfigurationError("No rules configured in src/telegram_monitor/config.py")
-
+def _check_text(text: str, config: MonitorConfig) -> int:
     matched_count = 0
-    for source in CONFIG.sources:
+    for source in config.sources:
+        if ends_with_question_mark(text):
+            print(f"SKIP  {source.label or source.peer}: ends with ?")
+            continue
         if not has_minimum_message_length(text):
             print(
                 f"SKIP  {source.label or source.peer}: fewer than {MIN_MESSAGE_LENGTH} characters"
@@ -180,13 +185,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         command = args.command or "run"
         if command == "run":
-            asyncio.run(_run_monitor_with_signals())
+            asyncio.run(_run_monitor_with_signals(load_config()))
         elif command == "list-chats":
             asyncio.run(_list_chats())
         elif command == "generate-session":
             asyncio.run(_generate_session())
         elif command == "check":
-            return _check_text(args.text)
+            return _check_text(args.text, load_config())
         else:  # pragma: no cover - argparse constrains the choices.
             parser.error(f"Unknown command: {command}")
     except ConfigurationError as error:

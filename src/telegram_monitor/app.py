@@ -5,7 +5,6 @@ import logging
 from telethon import TelegramClient
 
 from .client import create_client
-from .config import CONFIG
 from .credentials import TelegramCredentials
 from .models import ConfigurationError, MonitorConfig
 from .notifier import Notifier, TelegramBotNotifier, TelegramDialogNotifier
@@ -35,7 +34,7 @@ async def connect_authorized(client: TelegramClient) -> None:
         )
 
 
-async def run_monitor(config: MonitorConfig = CONFIG) -> None:
+async def run_monitor(config: MonitorConfig) -> None:
     config.validate_for_run()
     credentials = TelegramCredentials.from_environment()
     client = create_client(credentials)

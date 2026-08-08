@@ -1,5 +1,6 @@
 from telegram_monitor.matcher import (
     KeywordMatcher,
+    ends_with_question_mark,
     has_minimum_message_length,
     normalize_for_match,
 )
@@ -11,6 +12,14 @@ def test_requires_ten_non_whitespace_message_characters() -> None:
     assert has_minimum_message_length("1234567890") is True
     assert has_minimum_message_length("  1234567890  ") is True
     assert has_minimum_message_length(None) is False
+
+
+def test_detects_question_mark_after_trailing_whitespace() -> None:
+    assert ends_with_question_mark("Чи буде сьогодні реліз?") is True
+    assert ends_with_question_mark("Чи буде сьогодні реліз?  \n") is True
+    assert ends_with_question_mark("Сьогодні буде реліз.") is False
+    assert ends_with_question_mark("") is False
+    assert ends_with_question_mark(None) is False
 
 
 def test_matches_case_insensitive_word_fragments_and_ukrainian() -> None:

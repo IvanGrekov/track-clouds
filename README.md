@@ -16,9 +16,10 @@
 ## Що вже реалізовано
 
 - окремі правила для кожного каналу або чату;
-- `notify_all=True` для каналів, де потрібен кожен новий пост;
+- `notify_all = true` для каналів, де потрібен кожен новий пост;
 - Unicode NFKC + case-insensitive substring matching (`"ваканс"` знайде `"вакансія"`);
 - повідомлення коротші за 10 символів після обрізання пробілів автоматично пропускаються;
+- повідомлення, текст яких після обрізання кінцевих пробілів закінчується на `?`, пропускаються;
 - робота з текстом і підписами до фото/відео;
 - підтримка public username, `t.me` URL і числових `-100…` ID приватних груп;
 - посилання на оригінальне повідомлення, коли Telegram дозволяє його побудувати;
@@ -41,6 +42,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[dev]'
 cp .env.example .env
+cp config.example.toml config.toml
 ```
 
 Заповніть у `.env` тільки `TELEGRAM_API_ID` та `TELEGRAM_API_HASH`, після чого створіть
@@ -66,48 +68,52 @@ telegram-monitor list-chats
 ```
 
 Команда показує ваш `YOUR_USER_ID`, тип діалогу, username, title і стабільний marked ID.
-Відредагуйте `CONFIG` у
-[`src/telegram_monitor/config.py`](src/telegram_monitor/config.py):
+Відредагуйте локальний `config.toml`, створений із
+[`config.example.toml`](config.example.toml):
 
-```python
-CONFIG = MonitorConfig(
-    sources=(
-        # Кожен новий пост каналу.
-        SourceRule(peer="@product_updates", notify_all=True),
-        # Лише цікаві повідомлення discussion-групи.
-        SourceRule(
-            peer="@product_updates_chat",
-            keywords=("kubernetes", "terraform", "ваканс", "знижк"),
-            keywords_to_skip=("spam", "реклама", "casino"),
-            label="Product discussion",
-        ),
-        # Для приватної supergroup використовуйте ID з list-chats.
-        SourceRule(
-            peer=-1001234567890,
-            keywords=("incident", "реліз"),
-        ),
-    ),
-    notification_mode="saved_messages",
-    notify_to="me",
-    timezone="Europe/Kyiv",
-)
+```toml
+notification_mode = "saved_messages"
+notify_to = "me"
+timezone = "Europe/Kyiv"
+
+# Кожен новий пост каналу.
+[[sources]]
+peer = "@product_updates"
+notify_all = true
+
+# Лише цікаві повідомлення discussion-групи.
+[[sources]]
+peer = "@product_updates_chat"
+keywords = ["kubernetes", "terraform", "ваканс", "знижк"]
+keywords_to_skip = ["spam", "реклама", "casino"]
+label = "Product discussion"
+
+# Для приватної supergroup використовуйте ID з list-chats.
+[[sources]]
+peer = -1001234567890
+keywords = ["incident", "реліз"]
 ```
+
+`config.toml` доданий до `.gitignore`, тому ваші Telegram IDs і правила не потраплять у Git.
+За замовчуванням файл читається з поточної директорії. Інший шлях можна задати у `.env`,
+наприклад `MONITOR_CONFIG_FILE=~/.config/telegram-monitor/config.toml`.
 
 Discussion, прикріплена до каналу, є окремою supergroup. Додайте її як окреме джерело —
 username або `-100…` ID самої discussion-групи, а не каналу.
 
 Якщо і канал, і його discussion відстежуються одночасно, форвард поста каналу в discussion
 за замовчуванням не створює другий alert. Щоб бачити обидві копії, встановіть
-`skip_forwards_from_watched_sources=False` у `MonitorConfig`.
+`skip_forwards_from_watched_sources = false` у `config.toml`.
 
 Правило спочатку шукає **будь-який** фрагмент із `keywords` або пропускає цей етап для
-`notify_all=True`. Після позитивної перевірки застосовується опціональний
+`notify_all = true`. Після позитивної перевірки застосовується опціональний
 `keywords_to_skip`: якщо знайдено хоча б один його фрагмент, повідомлення не створює alert.
-Негативний фільтр має пріоритет і працює також разом із `notify_all=True`. Для обох списків
+Негативний фільтр має пріоритет і працює також разом із `notify_all = true`. Для обох списків
 регістр не має значення, використовується Unicode substring match, а порожні фрагменти
 відкидаються. Незалежно від правила, повідомлення коротше 10 символів після `strip()`
-пропускається; рівно 10 символів уже проходить цю перевірку. Правило без позитивних keywords
-дозволене лише з `notify_all=True`.
+пропускається; рівно 10 символів уже проходить цю перевірку. Повідомлення, яке після
+`rstrip()` закінчується на `?`, також завжди пропускається — навіть при збігу keyword або
+`notify_all = true`. Правило без позитивних keywords дозволене лише з `notify_all = true`.
 
 Перевірити конфіг без Telegram-запитів:
 
@@ -121,7 +127,7 @@ telegram-monitor check "Шукаємо Kubernetes-інженера"
 
 ### Saved Messages — найпростіший варіант
 
-Конфіг із `notification_mode="saved_messages"` копіює результати в Telegram Saved Messages.
+Конфіг із `notification_mode = "saved_messages"` копіює результати в Telegram Saved Messages.
 Це зручно як журнал, але Telegram може не показувати push для повідомлень, відправлених вашим
 власним акаунтом.
 
@@ -133,14 +139,11 @@ telegram-monitor check "Шукаємо Kubernetes-інженера"
 2. додайте `TELEGRAM_BOT_TOKEN` у `.env`;
 3. змініть конфіг:
 
-```python
-CONFIG = MonitorConfig(
-    sources=(...),
-    notification_mode="bot",
-    bot_subscriber_limit=10,
-    bot_subscriber_database=".state/bot_subscribers.sqlite3",
-    timezone="Europe/Kyiv",
-)
+```toml
+notification_mode = "bot"
+bot_subscriber_limit = 10
+bot_subscriber_database = ".state/bot_subscribers.sqlite3"
+timezone = "Europe/Kyiv"
 ```
 
 4. запустіть monitor;
@@ -172,6 +175,12 @@ CONFIG = MonitorConfig(
 telegram-monitor run
 ```
 
+## Запуск в одну команду:
+
+```bash
+.venv/bin/telegram-monitor
+```
+
 Або як довгоживучий Docker-сервіс:
 
 ```bash
@@ -179,8 +188,9 @@ docker compose up --build -d
 docker compose logs -f telegram-monitor
 ```
 
-Compose монтує named volume у `/app/.state`, тому підписники й Bot API offset не зникають
-після recreate контейнера. Для локального запуску вони зберігаються в `.state/` проєкту.
+Compose монтує локальний `config.toml` у `/app/config.toml` лише для читання та named volume
+у `/app/.state`, тому підписники й Bot API offset не зникають після recreate контейнера.
+Для локального запуску вони зберігаються в `.state/` проєкту.
 
 Зупинка через `Ctrl+C` або `docker compose stop` коректно від'єднує Telegram-клієнт і
 намагається доставити вже поставлені в чергу alerts.
@@ -203,9 +213,10 @@ Bot alert delivered to 3/3 subscriber(s)
 Bot alert delivery incomplete (status=partial, delivered=2, failed=1, total=3, failed_chat_ids=456)
 ```
 
-Логування відбувається після обох keyword-перевірок. Якщо позитивних збігів немає або
-спрацював `keywords_to_skip`, записується лише `Skip new message - datetime` без тексту
-повідомлення. Лише після позитивного match/`notify_all=True` і відсутності негативного match
+Логування відбувається після всіх перевірок. Якщо повідомлення закінчується на `?`,
+позитивних збігів немає або спрацював `keywords_to_skip`, записується лише
+`Skip new message - datetime` без тексту повідомлення. Лише після позитивного
+match/`notify_all=True` і відсутності негативного match
 записується `Match new message - datetime: preview`; у `bot`-режимі це також власні
 outgoing-повідомлення. Повторний Telegram update з тим самим `(chat_id, message_id)` вдруге
 не логується. Переноси рядків і керувальні символи matched-тексту прибираються, а довгий текст

@@ -1,64 +1,87 @@
-"""MVP configuration.
+"""Load monitor rules and runtime settings from a local TOML file."""
 
-Edit ``CONFIG`` directly for now. Credentials do not belong here; keep them in
-``.env`` as described in the README.
-"""
+from __future__ import annotations
 
-from .models import MonitorConfig, SourceRule
+import os
+import tomllib
+from collections.abc import Mapping
+from dataclasses import fields
+from pathlib import Path
+from typing import Any
 
-__all__ = ["CONFIG", "SourceRule"]
+from dotenv import load_dotenv
 
-# fmt: off
-CONFIG = MonitorConfig(
-    sources=(
-        # Filter a public discussion group by keyword or word fragment:
-        # SourceRule(
-        #     peer="@example_discussion",
-        #     keywords=("kubernetes", "terraform", "ваканс"),
-        #     keywords_to_skip=("spam", "реклама"),
-        #     label="Example discussion",
-        # ),
-        #
-        # Notify about every post in a public channel:
-        # SourceRule(peer="@example_channel", notify_all=True),
-        #
-        # Private groups/channels have no username. Use the ID from `list-chats`:
-        # SourceRule(peer=-1001234567890, keywords=("реліз", "incident")),
-        SourceRule(
-            peer="@holovni_Lviv",
-            keywords=("надіслати прогноз",),
-            keywords_to_skip=("доброго ранку",),
-            label="Головний канал",
-        ),
-        SourceRule(
-            peer=-1001719510902,
-            keywords=(
-                # ruff: ignore[E501]
-                "пасут", "намоту", "стоят", "їздят", "їздит", "паку", "зупин", "пиня", "перевір", "перекри", "поїх", "катают", "катає",
-                "кружля", "круг", "кол", "сторон",
-                "бус", "т5", "дасте", "берлі", "транзит", "джип", "чорн", "біл", "сір", "блях",
-                "паркінг", "парков", "підзем",
-                "патр", "поліц", "син", "мусор", "фару", "фара", "швидкі",
-                "хмар", "дощ", "полив", "ллє", "злив",
-                "блок", "пост", "облав",
-                "чист", "ніког",
-                "тцк", "військ", "підар", "зелен",
-            ),
-            keywords_to_skip=(
-                "реквізит", "@", "http", "услуг",
-                "зарплат", "оплат", "оплач", "ваканс", "робот", "работ", "офіс", "ищем", "шукаєм",
-                "бронюван", "допоможемо", "зняття", "знімаємо", "знімем",
-            ),
-            label="Головний чат",
-        ),
-    ),
-    # Easiest setup: matched messages are copied to Telegram Saved Messages.
-    # notification_mode="saved_messages",
-    # notify_to="me",
-    # For real push notifications, set TELEGRAM_BOT_TOKEN in .env. Users subscribe
-    # to this bot with /start and unsubscribe with /stop.
-    notification_mode="bot",
-    bot_subscriber_limit=10,
-    timezone="Europe/Kyiv",
-)
-# fmt: on
+from .models import ConfigurationError, MonitorConfig, SourceRule
+
+__all__ = ["CONFIG_PATH_ENV", "DEFAULT_CONFIG_PATH", "load_config"]
+
+CONFIG_PATH_ENV = "MONITOR_CONFIG_FILE"
+DEFAULT_CONFIG_PATH = Path("config.toml")
+
+_MONITOR_FIELDS = {field.name for field in fields(MonitorConfig)}
+_SOURCE_FIELDS = {field.name for field in fields(SourceRule)}
+
+
+def _resolve_config_path() -> Path:
+    load_dotenv()
+    configured_path = os.getenv(CONFIG_PATH_ENV, "").strip()
+    return Path(configured_path).expanduser() if configured_path else DEFAULT_CONFIG_PATH
+
+
+def _reject_unknown_keys(
+    values: Mapping[str, Any],
+    allowed: set[str],
+    location: str,
+) -> None:
+    unknown = sorted(set(values) - allowed)
+    if unknown:
+        joined = ", ".join(unknown)
+        raise ConfigurationError(f"Unknown {location} option(s): {joined}")
+
+
+def load_config(path: str | Path | None = None) -> MonitorConfig:
+    """Read, construct, and validate ``MonitorConfig`` from TOML."""
+
+    config_path = Path(path).expanduser() if path is not None else _resolve_config_path()
+    try:
+        with config_path.open("rb") as config_file:
+            raw_config = tomllib.load(config_file)
+    except FileNotFoundError as error:
+        raise ConfigurationError(
+            f"Configuration file not found: {config_path}. "
+            "Copy config.example.toml to config.toml and edit it."
+        ) from error
+    except tomllib.TOMLDecodeError as error:
+        raise ConfigurationError(f"Invalid TOML in {config_path}: {error}") from error
+    except OSError as error:
+        raise ConfigurationError(
+            f"Cannot read configuration file {config_path}: {error}"
+        ) from error
+
+    _reject_unknown_keys(raw_config, _MONITOR_FIELDS, "top-level")
+    raw_sources = raw_config.pop("sources", None)
+    if not isinstance(raw_sources, list) or not raw_sources:
+        raise ConfigurationError(
+            f"Configuration file {config_path} must contain at least one [[sources]] table"
+        )
+
+    sources: list[SourceRule] = []
+    for index, raw_source in enumerate(raw_sources, start=1):
+        if not isinstance(raw_source, dict):
+            raise ConfigurationError(f"sources entry #{index} must be a TOML table")
+        _reject_unknown_keys(raw_source, _SOURCE_FIELDS, f"sources entry #{index}")
+        try:
+            sources.append(SourceRule(**raw_source))
+        except ConfigurationError:
+            raise
+        except (AttributeError, TypeError, ValueError) as error:
+            raise ConfigurationError(f"Invalid sources entry #{index}: {error}") from error
+
+    try:
+        config = MonitorConfig(sources=tuple(sources), **raw_config)
+        config.validate_for_run()
+    except ConfigurationError:
+        raise
+    except (AttributeError, TypeError, ValueError) as error:
+        raise ConfigurationError(f"Invalid top-level configuration: {error}") from error
+    return config

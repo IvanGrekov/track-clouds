@@ -21,6 +21,7 @@ Telegram Keyword Monitor — це окремий event-driven Python-серві�
 | Telegram user client | Telethon 1.44+ | MTProto-підключення від імені звичайного акаунта та `NewMessage` events |
 | Telegram bot client | Telegram Bot API через HTTPX | `/start`, `/stop` та push-розсилка підписникам |
 | Конфігурація секретів | `python-dotenv` | Завантаження `.env` |
+| Business-конфіг | TOML через стандартний `tomllib` | Локальні джерела, фільтри та runtime-параметри |
 | Фільтрація | Власний Unicode substring matcher | Позитивні `keywords`, негативні `keywords_to_skip`, NFKC та `casefold()` |
 | Персистентний стан | SQLite | Підписники бота та Bot API update offset |
 | Тести | pytest, pytest-asyncio, pytest-cov | Офлайн unit та integration-style перевірки |
@@ -73,7 +74,7 @@ flowchart LR
 
 | Файл | Відповідальність |
 |---|---|
-| [`config.py`](src/telegram_monitor/config.py) | Поточний hardcoded список джерел, keywords і режим доставки |
+| [`config.py`](src/telegram_monitor/config.py) | Завантаження й валідація локального `config.toml` |
 | [`models.py`](src/telegram_monitor/models.py) | Dataclass-моделі та валідація конфігурації |
 | [`credentials.py`](src/telegram_monitor/credentials.py) | Безпечне читання Telegram credentials із середовища |
 | [`client.py`](src/telegram_monitor/client.py) | Створення Telethon client із `StringSession`, reconnect і catch-up |
@@ -89,13 +90,14 @@ flowchart LR
 ## Послідовність запуску
 
 1. CLI налаштовує стандартний Python logging.
-2. `MonitorConfig.validate_for_run()` перевіряє sources, timezone, queue/retry limits і bot limit.
+2. `config.toml` перетворюється на `MonitorConfig` і перевіряється: sources, timezone,
+   queue/retry limits і bot limit.
 3. Credentials завантажуються з `.env`.
 4. Створюється Telethon client із `StringSession`.
 5. До підключення реєструється catch-all `NewMessage` handler, щоб не втратити events під час
    завантаження діалогів.
 6. Telethon перевіряє авторизацію user-session.
-7. `SourceRegistry` зіставляє hardcoded username або `-100…` ID з доступними dialogs.
+7. `SourceRegistry` зіставляє налаштований username або `-100…` ID з доступними dialogs.
 8. Запускається notifier:
    - Saved Messages mode не потребує окремого background task;
    - bot mode викликає `getMe`, перевіряє відсутність webhook і запускає `getUpdates` polling.
@@ -112,24 +114,25 @@ flowchart LR
    - Unicode NFKC normalization;
    - Unicode-aware `casefold()`;
    - substring match для кожного fragment.
-5. Повідомлення коротше 10 символів після обрізання пробілів записується як
+5. Повідомлення, яке після обрізання кінцевих пробілів закінчується на `?`, записується як
    `Skip new message - datetime` без message text і не створює alert.
-6. Якщо немає match і `notify_all=False`, у terminal log записується лише
+6. Повідомлення коротше 10 символів після обрізання пробілів так само пропускається.
+7. Якщо немає match і `notify_all=False`, у terminal log записується лише
    `Skip new message - datetime` без message text, після чого обробка зупиняється.
-7. Після позитивної перевірки застосовується `keywords_to_skip`. Будь-який негативний match
+8. Після позитивної перевірки застосовується `keywords_to_skip`. Будь-який негативний match
    має пріоритет, записує `Skip new message - datetime` без message text і зупиняє обробку.
-8. Для match або `notify_all=True` без негативного match записується
+9. Для match або `notify_all=True` без негативного match записується
    `Match new message - datetime: preview`. Текст
    очищається від керувальних символів, перетворюється на один рядок і скорочується до 500
    символів.
-9. `RecentMessageCache` атомарно claim-ить `(chat_id, message_id)`, щоб duplicate update не
+10. `RecentMessageCache` атомарно claim-ить `(chat_id, message_id)`, щоб duplicate update не
    створив другий alert.
-10. Автоматична копія channel post у linked discussion пропускається, якщо обидва джерела
+11. Автоматична копія channel post у linked discussion пропускається, якщо обидва джерела
    відстежуються. Ручні user forwards не пропускаються.
-11. Створюється `MessageSnapshot`: source, author, text, time, matches, media і message ID.
-12. `render_notification()` створює plain-text alert до Telegram limit 4096 символів.
-13. Alert без блокуючих network calls додається в bounded `asyncio.Queue`.
-14. Один background worker послідовно дістає alerts і передає їх notifier-у.
+12. Створюється `MessageSnapshot`: source, author, text, time, matches, media і message ID.
+13. `render_notification()` створює plain-text alert до Telegram limit 4096 символів.
+14. Alert без блокуючих network calls додається в bounded `asyncio.Queue`.
+15. Один background worker послідовно дістає alerts і передає їх notifier-у.
 
 ## Доставка alerts
 
@@ -223,7 +226,10 @@ failure виникає після startup, notifier відключає Telethon 
 
 ## Конфігурація та secrets
 
-Наразі business-конфіг hardcoded у `src/telegram_monitor/config.py`.
+Business-конфіг зберігається в локальному `config.toml`: джерела, keywords, режим доставки,
+timezone, ліміти черг і retry-параметри. Файл ігнорується Git; у репозиторії є лише
+`config.example.toml`. За замовчуванням він читається з поточної директорії, а
+`MONITOR_CONFIG_FILE` дозволяє задати інший шлях.
 
 Secrets зберігаються в `.env`:
 
@@ -279,8 +285,10 @@ Docker image:
 - запускається як непривілейований user `monitor`;
 - виконує `telegram-monitor run`.
 
-Compose передає `.env`, використовує `restart: unless-stopped` і монтує named volume
-`telegram-monitor-state` у `/app/.state`. Завдяки цьому SQLite переживає recreate container.
+Compose передає `.env`, монтує локальний `config.toml` у `/app/config.toml` лише для читання,
+використовує `restart: unless-stopped` і монтує named volume `telegram-monitor-state` у
+`/app/.state`. Завдяки цьому SQLite переживає recreate container, а приватний конфіг не
+копіюється в image.
 
 ## Тестування
 
