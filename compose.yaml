@@ -6,6 +6,7 @@ services:
     env_file:
       - .env
     volumes:
+      - ./config.toml:/app/config.toml:ro
       - telegram-monitor-state:/app/.state
 
 volumes:

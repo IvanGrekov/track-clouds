@@ -86,7 +86,7 @@ class MonitorConfig:
     def validate_for_run(self) -> None:
         if not self.sources:
             raise ConfigurationError(
-                "No Telegram sources configured. Add SourceRule entries to config.py"
+                "No Telegram sources configured. Add [[sources]] entries to config.toml"
             )
         if isinstance(self.notify_to, bool) or not isinstance(self.notify_to, (int, str)):
             raise ConfigurationError("notify_to must be a Telegram username or numeric dialog ID")

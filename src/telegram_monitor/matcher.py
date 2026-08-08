@@ -6,6 +6,12 @@ from collections.abc import Iterable
 MIN_MESSAGE_LENGTH = 10
 
 
+def ends_with_question_mark(text: str | None) -> bool:
+    """Return whether trimmed message text ends with an ASCII question mark."""
+
+    return text is not None and text.rstrip().endswith("?")
+
+
 def has_minimum_message_length(text: str | None) -> bool:
     """Return whether non-whitespace message text reaches the global minimum."""
 

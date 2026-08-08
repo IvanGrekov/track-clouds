@@ -1,0 +1,29 @@
+# Copy this file to config.toml. The local config.toml is ignored by Git.
+
+# use saved_messages mode
+notification_mode = "saved_messages"
+notify_to = "me"
+
+# or use bot mode
+notification_mode="bot"
+bot_subscriber_limit=10
+
+timezone = "Europe/Kyiv"
+
+# Notify about every post in a public channel.
+[[sources]]
+peer = "@example_channel"
+notify_all = true
+label = "Example channel"
+
+# Filter a discussion group by case-insensitive word fragments.
+[[sources]]
+peer = "@example_discussion"
+keywords = ["хмари", "дощ", "злива"]
+keywords_to_skip = ["http", "@"]
+label = "Example discussion"
+
+# Private groups and channels have no username. Use the ID from `list-chats`:
+# [[sources]]
+# peer = -1001234567890
+# keywords = ["поливає", "ллє"]
