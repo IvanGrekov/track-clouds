@@ -38,11 +38,14 @@ def test_renders_plain_text_notification_with_local_time() -> None:
         max_preview_chars=1_000,
     )
 
-    assert "Джерело: Cloud discussion" in rendered
+    assert rendered == (
+        "Kubernetes release\n\n"
+        "Джерело: Cloud discussion\n"
+        "Час: 2026-08-06 15:30:00 EEST\n"
+        "Збіги: kubernetes\n\n"
+        "Відкрити: https://t.me/cloud_chat/42"
+    )
     assert "Автор:" not in rendered
-    assert "Збіги: kubernetes" in rendered
-    assert "2026-08-06 15:30:00 EEST" in rendered
-    assert "https://t.me/cloud_chat/42" in rendered
 
 
 def test_notify_all_media_without_caption_has_useful_fallback() -> None:

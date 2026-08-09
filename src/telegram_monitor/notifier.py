@@ -54,6 +54,8 @@ class NotificationError(RuntimeError):
 class Notifier(Protocol):
     async def start(self) -> None: ...
 
+    async def get_subscriber_count(self) -> int | None: ...
+
     async def send(self, text: str) -> None: ...
 
     async def close(self) -> None: ...
@@ -67,6 +69,9 @@ class TelegramDialogNotifier:
         self._target = target
 
     async def start(self) -> None:
+        return None
+
+    async def get_subscriber_count(self) -> int | None:
         return None
 
     async def send(self, text: str) -> None:
@@ -269,6 +274,9 @@ class TelegramBotNotifier:
             "Bot command polling started; accepting /start and /stop (subscriber limit: %d)",
             self._subscriber_limit,
         )
+
+    async def get_subscriber_count(self) -> int | None:
+        return len(await _run_blocking(self._store.list_chat_ids))
 
     async def send(self, text: str) -> None:
         await _run_blocking(self._store.open)
