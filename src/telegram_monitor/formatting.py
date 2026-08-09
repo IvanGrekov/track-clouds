@@ -52,7 +52,7 @@ def render_notification(
     )
     source_title = _truncate(message.source_title, 256)
     match_line = _truncate(match_line, 768)
-    header = "\n".join(
+    details = "\n".join(
         (
             f"Джерело: {source_title}",
             f"Час: {_format_time(message.date, timezone_name)}",
@@ -65,7 +65,7 @@ def render_notification(
     fallback = "[медіа без підпису]" if message.has_media else "[повідомлення без тексту]"
     preview = _truncate(message.text.strip() or fallback, max_preview_chars)
 
-    available_preview = TELEGRAM_MESSAGE_LIMIT - len(header) - len(footer) - 2
+    trailer = f"\n\n{details}{footer}"
+    available_preview = TELEGRAM_MESSAGE_LIMIT - len(trailer)
     preview = _truncate(preview, max(1, available_preview))
-    body = f"{header}\n\n{preview}"
-    return _truncate(body, TELEGRAM_MESSAGE_LIMIT - len(footer)) + footer
+    return _truncate(preview, TELEGRAM_MESSAGE_LIMIT - len(trailer)) + trailer
