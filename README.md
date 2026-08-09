@@ -178,7 +178,7 @@ telegram-monitor run
 ## Запуск в одну команду:
 
 ```bash
-.venv/bin/telegram-monitor
+.venv/bin/telegram-monitor run
 ```
 
 Або як довгоживучий Docker-сервіс:
@@ -235,9 +235,9 @@ outgoing-повідомлення. Повторний Telegram update з тим 
 ## Перевірка коду
 
 ```bash
-python -m pytest
-python -m pytest --cov --cov-report=term-missing
-ruff check .
+.venv/bin/python -m pytest
+.venv/bin/python -m pytest --cov --cov-report=term-missing
+.venv/bin/ruff check .
 ```
 
 Тести не підключаються до Telegram і не потребують реальних credentials.
