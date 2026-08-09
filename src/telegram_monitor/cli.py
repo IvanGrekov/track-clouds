@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 import signal
+import sys
 from collections.abc import Sequence
 
 from telethon.sessions import StringSession
@@ -42,7 +43,13 @@ class _SuppressDifferenceLogs(logging.Filter):
         return not (channel_difference or account_difference)
 
 
+class _BelowWarningFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno < logging.WARNING
+
+
 _DIFFERENCE_LOG_FILTER = _SuppressDifferenceLogs()
+_BELOW_WARNING_FILTER = _BelowWarningFilter()
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -63,9 +70,14 @@ def _build_parser() -> argparse.ArgumentParser:
 def _configure_logging() -> None:
     configured_level = os.getenv("LOG_LEVEL", "INFO").upper()
     level = getattr(logging, configured_level, logging.INFO)
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.addFilter(_BELOW_WARNING_FILTER)
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setLevel(logging.WARNING)
     logging.basicConfig(
         level=level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=(stdout_handler, stderr_handler),
     )
     updates_logger = logging.getLogger("telethon.client.updates")
     if _DIFFERENCE_LOG_FILTER not in updates_logger.filters:

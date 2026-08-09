@@ -59,6 +59,39 @@ def test_configure_logging_hides_only_channel_difference_info(
     assert _DIFFERENCE_LOG_FILTER.filter(matching_warning_record) is True
 
 
+def test_configure_logging_routes_warnings_and_errors_to_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    basic_config: dict[str, object] = {}
+    monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+    monkeypatch.setattr(logging, "basicConfig", lambda **kwargs: basic_config.update(kwargs))
+
+    _configure_logging()
+
+    logger = logging.Logger("test.logging.streams", level=logging.DEBUG)
+    handlers = basic_config["handlers"]
+    assert isinstance(handlers, tuple)
+    for handler in handlers:
+        assert isinstance(handler, logging.Handler)
+        logger.addHandler(handler)
+
+    logger.debug("diagnostic-debug")
+    logger.info("healthy-info")
+    logger.warning("useful-warning")
+    logger.error("real-error")
+
+    captured = capsys.readouterr()
+    assert "diagnostic-debug" in captured.out
+    assert "healthy-info" in captured.out
+    assert "useful-warning" not in captured.out
+    assert "real-error" not in captured.out
+    assert "useful-warning" in captured.err
+    assert "real-error" in captured.err
+    assert "diagnostic-debug" not in captured.err
+    assert "healthy-info" not in captured.err
+
+
 def test_check_text_applies_keywords_to_skip(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

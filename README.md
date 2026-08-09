@@ -199,6 +199,9 @@ Compose монтує локальний `config.toml` у `/app/config.toml` ли
 
 За стандартного `LOG_LEVEL=INFO` події одразу виводяться в термінал, без окремого log-файлу:
 
+Рівні `DEBUG` та `INFO` виводяться у `stdout`, а `WARNING`, `ERROR` і `CRITICAL` — у
+`stderr`. Завдяки цьому Railway не позначає звичайні інформаційні повідомлення як помилки.
+
 Точково приховано внутрішні Telethon `INFO`-логи `Got difference for channel <id> updates`
 та `Got difference for account updates`. Решта `INFO`, `WARNING` та `ERROR` Telethon
 залишається без змін.
