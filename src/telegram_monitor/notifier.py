@@ -267,7 +267,7 @@ class TelegramBotNotifier:
                 await ready_waiter
         subscriber_count = len(await _run_blocking(self._store.list_chat_ids))
         LOGGER.info(
-            "Bot command polling started; accepting /start and /stop "
+            "Bot command polling started; Accepting /start and /stop "
             "(subscriber limit: %d); Current subscribers: %d",
             self._subscriber_limit,
             subscriber_count,

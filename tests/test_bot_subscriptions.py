@@ -196,7 +196,7 @@ async def test_poller_processes_command_and_persists_next_offset(
     assert "offset" not in get_updates_payloads[0]
     assert get_updates_payloads[1]["offset"] == 43
     assert (
-        "Bot command polling started; accepting /start and /stop "
+        "Bot command polling started; Accepting /start and /stop "
         "(subscriber limit: 10); Current subscribers: 1" in caplog.text
     )
     assert "Bot subscribers:" not in caplog.text
