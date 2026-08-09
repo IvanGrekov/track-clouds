@@ -54,8 +54,6 @@ class NotificationError(RuntimeError):
 class Notifier(Protocol):
     async def start(self) -> None: ...
 
-    async def get_subscriber_count(self) -> int | None: ...
-
     async def send(self, text: str) -> None: ...
 
     async def close(self) -> None: ...
@@ -69,9 +67,6 @@ class TelegramDialogNotifier:
         self._target = target
 
     async def start(self) -> None:
-        return None
-
-    async def get_subscriber_count(self) -> int | None:
         return None
 
     async def send(self, text: str) -> None:
@@ -270,13 +265,13 @@ class TelegramBotNotifier:
             ready_waiter.cancel()
             with suppress(asyncio.CancelledError):
                 await ready_waiter
+        subscriber_count = len(await _run_blocking(self._store.list_chat_ids))
         LOGGER.info(
-            "Bot command polling started; accepting /start and /stop (subscriber limit: %d)",
+            "Bot command polling started; accepting /start and /stop "
+            "(subscriber limit: %d); Current subscribers: %d",
             self._subscriber_limit,
+            subscriber_count,
         )
-
-    async def get_subscriber_count(self) -> int | None:
-        return len(await _run_blocking(self._store.list_chat_ids))
 
     async def send(self, text: str) -> None:
         await _run_blocking(self._store.open)

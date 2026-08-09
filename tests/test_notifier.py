@@ -47,7 +47,6 @@ async def test_dialog_notifier_sends_plain_text_without_preview() -> None:
     notifier = TelegramDialogNotifier(client, "me")
 
     await notifier.start()
-    assert await notifier.get_subscriber_count() is None
     await notifier.send("alert")
     await notifier.close()
 
@@ -75,7 +74,6 @@ async def test_bot_notifier_broadcasts_plain_text_without_formatting(
         transport=httpx.MockTransport(handler),
         store=_open_store(456, 789),
     )
-    assert await notifier.get_subscriber_count() == 2
     await notifier.send("alert")
     await notifier.close()
 
