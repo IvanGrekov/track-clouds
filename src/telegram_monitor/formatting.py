@@ -46,22 +46,22 @@ def render_notification(
     """Render a plain-text Telegram notification within Telegram's size limit."""
 
     match_line = (
-        "Збіги: " + ", ".join(message.matched_keywords)
+        "Matches: " + ", ".join(message.matched_keywords)
         if message.matched_keywords
-        else "Фільтр: усі повідомлення"
+        else "Filter: усі повідомлення"
     )
     source_title = _truncate(message.source_title, 256)
     match_line = _truncate(match_line, 768)
     details = "\n".join(
         (
-            f"Джерело: {source_title}",
-            f"Час: {_format_time(message.date, timezone_name)}",
+            f"Source: {source_title}",
+            f"Time: {_format_time(message.date, timezone_name)}",
             match_line,
         )
     )
 
     link = build_message_link(message.peer_id, message.message_id, message.username)
-    footer = f"\n\nВідкрити: {link}" if link else ""
+    footer = f"\n\nOpen: {link}" if link else ""
     fallback = "[медіа без підпису]" if message.has_media else "[повідомлення без тексту]"
     preview = _truncate(message.text.strip() or fallback, max_preview_chars)
 

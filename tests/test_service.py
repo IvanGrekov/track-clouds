@@ -138,7 +138,7 @@ async def test_event_flow_filters_enqueues_notifies_and_deduplicates() -> None:
     await monitor._queue.join()
 
     assert len(notifier.sent) == 1
-    assert "Збіги: ваканс, k8s" in notifier.sent[0]
+    assert "Matches: ваканс, k8s" in notifier.sent[0]
     assert "Нова ВАКАНСІЯ для K8S" in notifier.sent[0]
 
     await monitor.close()
@@ -281,7 +281,7 @@ async def test_skips_automatic_discussion_copy_but_keeps_manual_user_forward() -
     await monitor._queue.join()
 
     assert len(notifier.sent) == 2
-    assert "Джерело: Announcements" in notifier.sent[0]
+    assert "Source: Announcements" in notifier.sent[0]
     assert "k8s release" in notifier.sent[0]
     assert "user manually forwarded k8s release" in notifier.sent[1]
     await monitor.close()
