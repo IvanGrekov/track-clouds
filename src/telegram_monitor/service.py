@@ -85,9 +85,6 @@ class TelegramMonitor:
             len(descriptions),
             ", ".join(descriptions),
         )
-        subscriber_count = await self._notifier.get_subscriber_count()
-        if subscriber_count is not None:
-            LOGGER.info("Bot subscribers: %d", subscriber_count)
         return descriptions
 
     async def close(self) -> None:

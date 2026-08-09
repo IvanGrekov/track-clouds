@@ -33,9 +33,8 @@ class FakeClient:
 
 
 class FakeNotifier:
-    def __init__(self, failures: int = 0, subscriber_count: int | None = None) -> None:
+    def __init__(self, failures: int = 0) -> None:
         self.failures = failures
-        self.subscriber_count = subscriber_count
         self.calls = 0
         self.sent: list[str] = []
         self.started = False
@@ -43,9 +42,6 @@ class FakeNotifier:
 
     async def start(self) -> None:
         self.started = True
-
-    async def get_subscriber_count(self) -> int | None:
-        return self.subscriber_count
 
     async def send(self, text: str) -> None:
         self.calls += 1
@@ -105,31 +101,6 @@ def _config() -> MonitorConfig:
         ),
         timezone="UTC",
     )
-
-
-@pytest.mark.asyncio
-async def test_logs_bot_subscriber_count_after_monitored_sources(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    discussion_id = -1001111111111
-    client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])
-    notifier = FakeNotifier(subscriber_count=3)
-    config = MonitorConfig(
-        sources=(SourceRule(peer="@discussion", keywords=("k8s",)),),
-        notification_mode="bot",
-        timezone="UTC",
-    )
-    monitor = TelegramMonitor(client, config, notifier)
-    caplog.set_level(logging.INFO, logger="telegram_monitor.service")
-
-    await monitor.prepare()
-
-    startup_logs = [record.getMessage() for record in caplog.records]
-    assert startup_logs[-2:] == [
-        "Monitoring 1 Telegram sources: Discussion (-1001111111111)",
-        "Bot subscribers: 3",
-    ]
-    await monitor.close()
 
 
 @pytest.mark.asyncio

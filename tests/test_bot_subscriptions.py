@@ -155,10 +155,13 @@ async def test_failed_command_reply_is_logged(caplog: pytest.LogCaptureFixture) 
 
 
 @pytest.mark.asyncio
-async def test_poller_processes_command_and_persists_next_offset() -> None:
+async def test_poller_processes_command_and_persists_next_offset(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     second_poll_started = asyncio.Event()
     keep_polling = asyncio.Event()
     get_updates_payloads: list[Mapping[str, object]] = []
+    caplog.set_level(logging.INFO, logger="telegram_monitor.notifier")
 
     async def handler(request: httpx.Request) -> httpx.Response:
         method = request.url.path.rsplit("/", maxsplit=1)[-1]
@@ -192,6 +195,11 @@ async def test_poller_processes_command_and_persists_next_offset() -> None:
     assert store.get_next_update_offset() == 43
     assert "offset" not in get_updates_payloads[0]
     assert get_updates_payloads[1]["offset"] == 43
+    assert (
+        "Bot command polling started; accepting /start and /stop "
+        "(subscriber limit: 10); Current subscribers: 1" in caplog.text
+    )
+    assert "Bot subscribers:" not in caplog.text
     await notifier.close()
 
 
