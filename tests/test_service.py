@@ -147,6 +147,29 @@ async def test_event_flow_filters_enqueues_notifies_and_deduplicates() -> None:
 
 
 @pytest.mark.asyncio
+async def test_validation_sanitizes_but_alert_preserves_original_text() -> None:
+    discussion_id = -1001111111111
+    original_text = "k8s release) 🚀"
+    client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])
+    notifier = FakeNotifier()
+    config = MonitorConfig(
+        sources=(SourceRule(peer="@discussion", keywords=("k8s",)),),
+        timezone="UTC",
+    )
+    monitor = TelegramMonitor(client, config, notifier)
+    await monitor.prepare()
+
+    await monitor.handle_event(FakeEvent(discussion_id, 1, "k8s done? 🙂)"))
+    await monitor.handle_event(FakeEvent(discussion_id, 2, "k8s))))))))🙂"))
+    await monitor.handle_event(FakeEvent(discussion_id, 3, original_text))
+    await monitor._queue.join()
+
+    assert len(notifier.sent) == 1
+    assert original_text in notifier.sent[0]
+    await monitor.close()
+
+
+@pytest.mark.asyncio
 async def test_notification_failure_does_not_stop_worker() -> None:
     discussion_id = -1001111111111
     client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])

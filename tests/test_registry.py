@@ -60,6 +60,9 @@ def test_resolves_username_and_numeric_id_and_applies_rules() -> None:
     assert registry.matches(-1002222222222, "") is None
     assert registry.matches(-1002222222222, "123456789") is None
     assert registry.matches(-1002222222222, "1234567890") == ()
+    assert registry.matches(-1002222222222, "123456789)🙂") is None
+    assert registry.matches(-1002222222222, "1234567890)🙂") == ()
+    assert registry.matches(-1002222222222, "Is it ready? 🙂) ") is None
     assert registry.matches(-1002222222222, "Sponsored post") is None
     assert registry.matches(-1009999999999, "k8s") is None
 
