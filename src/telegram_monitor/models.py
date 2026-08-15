@@ -1,16 +1,131 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Literal, TypeAlias
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 ChatRef: TypeAlias = int | str
 NotificationMode: TypeAlias = Literal["saved_messages", "bot"]
+AIReasoningEffort: TypeAlias = Literal["none", "low", "medium", "high", "xhigh"]
+
+_AI_REASONING_EFFORTS = frozenset({"none", "low", "medium", "high", "xhigh"})
 
 
 class ConfigurationError(ValueError):
     """Raised when local or environment configuration is invalid."""
+
+
+@dataclass(frozen=True, slots=True)
+class AIObservationConfig:
+    """Runtime settings for the optional semantic observer."""
+
+    enabled: bool = False
+    model: str = "gpt-5.4-nano-2026-03-17"
+    prompt_bundle_path: str | Path = Path("prompts")
+    policy_prompt_path: str | Path = Path("policy-prompt.txt")
+    default_trusted_area_context: str | None = None
+    operation_timeout_seconds: float = 30.0
+    request_attempts: int = 2
+    retry_base_seconds: float = 0.5
+    retry_max_seconds: float = 2.0
+    reasoning_effort: AIReasoningEffort = "none"
+    max_output_tokens: int = 800
+    store_responses: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise ConfigurationError("ai_observation.enabled must be boolean")
+
+        if not isinstance(self.model, str) or not self.model.strip():
+            raise ConfigurationError("ai_observation.model must be a non-empty string")
+        object.__setattr__(self, "model", self.model.strip())
+
+        for field_name in ("prompt_bundle_path", "policy_prompt_path"):
+            configured_path = getattr(self, field_name)
+            if isinstance(configured_path, str):
+                if not configured_path.strip():
+                    raise ConfigurationError(
+                        f"ai_observation.{field_name} must be a non-empty path"
+                    )
+                configured_path = Path(configured_path.strip()).expanduser()
+            elif not isinstance(configured_path, Path):
+                raise ConfigurationError(f"ai_observation.{field_name} must be a path")
+            object.__setattr__(self, field_name, configured_path)
+
+        if self.default_trusted_area_context is not None:
+            if not isinstance(self.default_trusted_area_context, str):
+                raise ConfigurationError(
+                    "ai_observation.default_trusted_area_context must be a string"
+                )
+            cleaned_context = self.default_trusted_area_context.strip()
+            object.__setattr__(
+                self,
+                "default_trusted_area_context",
+                cleaned_context or None,
+            )
+
+        timeout = self.operation_timeout_seconds
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout)
+            or not 0 < timeout <= 30
+        ):
+            raise ConfigurationError(
+                "ai_observation.operation_timeout_seconds must be greater than 0 and at most 30"
+            )
+        object.__setattr__(self, "operation_timeout_seconds", float(timeout))
+
+        if (
+            isinstance(self.request_attempts, bool)
+            or not isinstance(self.request_attempts, int)
+            or not 1 <= self.request_attempts <= 3
+        ):
+            raise ConfigurationError("ai_observation.request_attempts must be between 1 and 3")
+
+        retry_base = self.retry_base_seconds
+        retry_max = self.retry_max_seconds
+        for field_name, value in (
+            ("retry_base_seconds", retry_base),
+            ("retry_max_seconds", retry_max),
+        ):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or not 0 <= value <= 30
+            ):
+                raise ConfigurationError(f"ai_observation.{field_name} must be between 0 and 30")
+            object.__setattr__(self, field_name, float(value))
+        if retry_max < retry_base:
+            raise ConfigurationError(
+                "ai_observation.retry_max_seconds cannot be smaller than retry_base_seconds"
+            )
+        if retry_max > timeout:
+            raise ConfigurationError(
+                "ai_observation.retry_max_seconds cannot exceed operation_timeout_seconds"
+            )
+
+        if (
+            not isinstance(self.reasoning_effort, str)
+            or self.reasoning_effort not in _AI_REASONING_EFFORTS
+        ):
+            choices = ", ".join(sorted(_AI_REASONING_EFFORTS))
+            raise ConfigurationError(f"ai_observation.reasoning_effort must be one of: {choices}")
+
+        if (
+            isinstance(self.max_output_tokens, bool)
+            or not isinstance(self.max_output_tokens, int)
+            or not 128 <= self.max_output_tokens <= 2_048
+        ):
+            raise ConfigurationError(
+                "ai_observation.max_output_tokens must be between 128 and 2048"
+            )
+        if not isinstance(self.store_responses, bool):
+            raise ConfigurationError("ai_observation.store_responses must be boolean")
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +143,7 @@ class SourceRule:
     notify_all: bool = False
     label: str | None = None
     keywords_to_skip: tuple[str, ...] | list[str] = ()
+    trusted_area_context: str | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.peer, bool) or not isinstance(self.peer, (int, str)):
@@ -64,6 +180,11 @@ class SourceRule:
         if self.label is not None:
             cleaned_label = self.label.strip()
             object.__setattr__(self, "label", cleaned_label or None)
+        if self.trusted_area_context is not None:
+            if not isinstance(self.trusted_area_context, str):
+                raise ConfigurationError("trusted_area_context must be a string")
+            cleaned_context = self.trusted_area_context.strip()
+            object.__setattr__(self, "trusted_area_context", cleaned_context or None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,12 +203,24 @@ class MonitorConfig:
     delivery_retry_base_seconds: float = 1.0
     delivery_retry_max_seconds: float = 30.0
     skip_forwards_from_watched_sources: bool = True
+    ai_observation: AIObservationConfig = field(default_factory=AIObservationConfig)
+
+    def trusted_area_context_for(self, source: SourceRule) -> str | None:
+        """Return the source-specific context, falling back to the AI default."""
+
+        return (
+            source.trusted_area_context
+            if source.trusted_area_context is not None
+            else self.ai_observation.default_trusted_area_context
+        )
 
     def validate_for_run(self) -> None:
         if not self.sources:
             raise ConfigurationError(
                 "No Telegram sources configured. Add [[sources]] entries to config.toml"
             )
+        if not isinstance(self.ai_observation, AIObservationConfig):
+            raise ConfigurationError("ai_observation must be an AIObservationConfig")
         if isinstance(self.notify_to, bool) or not isinstance(self.notify_to, (int, str)):
             raise ConfigurationError("notify_to must be a Telegram username or numeric dialog ID")
         if isinstance(self.notify_to, str) and not self.notify_to.strip():

@@ -7,6 +7,20 @@ from dotenv import load_dotenv
 
 from .models import ConfigurationError
 
+OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
+
+
+def validate_openai_api_key(*, required: bool) -> None:
+    """Validate presence of an OpenAI key without returning or logging its value."""
+
+    if not required:
+        return
+
+    load_dotenv()
+    api_key = os.getenv(OPENAI_API_KEY_ENV, "").strip()
+    if not api_key or api_key.startswith("replace_"):
+        raise ConfigurationError("OPENAI_API_KEY is required when ai_observation.enabled is true")
+
 
 @dataclass(frozen=True, slots=True)
 class TelegramCredentials:

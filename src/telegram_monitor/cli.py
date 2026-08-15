@@ -2,15 +2,21 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import signal
 import sys
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from typing import Protocol
 
 from telethon.sessions import StringSession
 
 from . import __version__
+from .ai_models import AIObservationTechnicalStatus
 from .app import connect_authorized, run_monitor
 from .client import create_client, create_login_client
 from .config import load_config
@@ -21,7 +27,13 @@ from .matcher import (
     ends_with_question_mark,
     has_minimum_message_length,
 )
-from .models import ConfigurationError, MonitorConfig
+from .models import AIObservationConfig, ConfigurationError, MonitorConfig
+from .openai_client import (
+    AIObservationFailure,
+    AIObservationRequest,
+    AIObservationSuccess,
+    build_openai_observation_client,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -51,6 +63,32 @@ class _BelowWarningFilter(logging.Filter):
 _DIFFERENCE_LOG_FILTER = _SuppressDifferenceLogs()
 _BELOW_WARNING_FILTER = _BelowWarningFilter()
 
+_AI_TECHNICAL_EXIT_CODE = 3
+
+
+class _AIClient(Protocol):
+    async def classify(
+        self,
+        request: AIObservationRequest,
+        *,
+        timeout_seconds: float,
+    ) -> AIObservationSuccess | AIObservationFailure: ...
+
+    async def close(self) -> None: ...
+
+
+_AIClientFactory = Callable[[AIObservationConfig], _AIClient | None]
+
+
+def _non_negative_integer(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be a non-negative integer") from error
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be a non-negative integer")
+    return parsed
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -64,24 +102,76 @@ def _build_parser() -> argparse.ArgumentParser:
     commands.add_parser("generate-session", help="interactively create a dedicated session string")
     check = commands.add_parser("check", help="test configured rules against text without Telegram")
     check.add_argument("text", help="message text to check")
+    ai_check = commands.add_parser(
+        "ai-check",
+        help="make one explicit live OpenAI classification without using Telegram",
+    )
+    ai_check.add_argument(
+        "--live",
+        action="store_true",
+        required=True,
+        help="confirm that message text may be sent to OpenAI and incur API usage",
+    )
+    ai_check.add_argument("text", nargs="?", help="message text to classify")
+    ai_check.add_argument(
+        "--stdin",
+        action="store_true",
+        help="read message text from stdin instead of a positional argument",
+    )
+    ai_check.add_argument(
+        "--matched-keyword",
+        dest="matched_keywords",
+        action="append",
+        default=[],
+        help="prefilter keyword that matched; repeat for multiple values",
+    )
+    ai_check.add_argument(
+        "--notify-all",
+        action="store_true",
+        help="represent a source configured with notify_all=true",
+    )
+    ai_check.add_argument(
+        "--trusted-area-context",
+        help="trusted area context; defaults to ai_observation.default_trusted_area_context",
+    )
+    ai_check.add_argument(
+        "--reply-context",
+        help="optional reply text supplied directly without contacting Telegram",
+    )
+    ai_check.add_argument(
+        "--message-age-seconds",
+        type=_non_negative_integer,
+        default=0,
+        help="message age used to derive sent_at (default: 0)",
+    )
     return parser
 
 
-def _configure_logging() -> None:
+def _configure_logging(*, stdout_is_data: bool = False) -> None:
     configured_level = os.getenv("LOG_LEVEL", "INFO").upper()
     level = getattr(logging, configured_level, logging.INFO)
-    stdout_handler = logging.StreamHandler(sys.stdout)
-    stdout_handler.addFilter(_BELOW_WARNING_FILTER)
     stderr_handler = logging.StreamHandler(sys.stderr)
-    stderr_handler.setLevel(logging.WARNING)
+    if stdout_is_data:
+        handlers = (stderr_handler,)
+    else:
+        stdout_handler = logging.StreamHandler(sys.stdout)
+        stdout_handler.addFilter(_BELOW_WARNING_FILTER)
+        stderr_handler.setLevel(logging.WARNING)
+        handlers = (stdout_handler, stderr_handler)
     logging.basicConfig(
         level=level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        handlers=(stdout_handler, stderr_handler),
+        handlers=handlers,
+        force=True,
     )
     updates_logger = logging.getLogger("telethon.client.updates")
     if _DIFFERENCE_LOG_FILTER not in updates_logger.filters:
         updates_logger.addFilter(_DIFFERENCE_LOG_FILTER)
+    # The OpenAI and HTTP clients can include request options or bodies in DEBUG logs.
+    # Keep private prompts and Telegram text out of application output even when the
+    # monitor's own LOG_LEVEL is DEBUG.
+    for logger_name in ("openai", "httpx", "httpcore"):
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 
 async def _generate_session() -> None:
@@ -189,13 +279,189 @@ def _check_text(text: str, config: MonitorConfig) -> int:
     return 0 if matched_count else 1
 
 
+def _read_ai_check_input(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+) -> tuple[str, tuple[str, ...]]:
+    has_positional_text = args.text is not None
+    if has_positional_text == args.stdin:
+        parser.error("ai-check requires exactly one of positional text or --stdin")
+
+    text = sys.stdin.read().rstrip("\r\n") if args.stdin else args.text
+    if not isinstance(text, str) or not text.strip():
+        parser.error("ai-check message text must not be empty")
+
+    matched_keywords = tuple(
+        keyword.strip()
+        for keyword in args.matched_keywords
+        if isinstance(keyword, str) and keyword.strip()
+    )
+    if not matched_keywords and not args.notify_all:
+        parser.error("ai-check requires --matched-keyword or --notify-all")
+    return text, matched_keywords
+
+
+def _ai_metadata(
+    outcome: AIObservationSuccess | AIObservationFailure,
+) -> dict[str, object]:
+    return {
+        "model": outcome.model,
+        "prompt_hash": outcome.prompt_hash,
+        "api_latency_seconds": outcome.api_latency_seconds,
+        "attempts": outcome.attempts,
+    }
+
+
+def _ai_check_payload(
+    outcome: AIObservationSuccess | AIObservationFailure,
+) -> tuple[dict[str, object], int]:
+    metadata = _ai_metadata(outcome)
+    if isinstance(outcome, AIObservationSuccess):
+        result = outcome.result
+        token_usage: dict[str, int] | None = None
+        if outcome.token_usage is not None:
+            token_usage = {
+                "input_tokens": outcome.token_usage.input_tokens,
+                "output_tokens": outcome.token_usage.output_tokens,
+                "total_tokens": outcome.token_usage.total_tokens,
+            }
+        metadata["token_usage"] = token_usage
+        return (
+            {
+                "kind": "semantic",
+                "decision": result.decision.value,
+                "confidence": result.confidence,
+                "location": result.location,
+                "event": result.event,
+                "temporal_relevance": result.temporal_relevance.value,
+                "reason_code": result.reason_code.value,
+                "reason": result.reason,
+                "metadata": metadata,
+            },
+            0,
+        )
+    return (
+        {
+            "kind": "technical_failure",
+            "status": outcome.status.value,
+            "metadata": metadata,
+        },
+        _AI_TECHNICAL_EXIT_CODE,
+    )
+
+
+def _unexpected_ai_check_payload(
+    config: AIObservationConfig,
+    *,
+    elapsed_seconds: float,
+) -> tuple[dict[str, object], int]:
+    return (
+        {
+            "kind": "technical_failure",
+            "status": AIObservationTechnicalStatus.API_ERROR.value,
+            "metadata": {
+                "model": config.model,
+                "prompt_hash": None,
+                "api_latency_seconds": elapsed_seconds,
+                "attempts": 0,
+            },
+        },
+        _AI_TECHNICAL_EXIT_CODE,
+    )
+
+
+async def _run_ai_check(
+    text: str,
+    config: MonitorConfig,
+    *,
+    matched_keywords: tuple[str, ...],
+    notify_all: bool,
+    trusted_area_context: str | None,
+    reply_context: str | None,
+    message_age_seconds: int,
+    client_factory: _AIClientFactory = build_openai_observation_client,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    monotonic: Callable[[], float] = time.monotonic,
+) -> int:
+    live_config = replace(config.ai_observation, enabled=True)
+    context = (
+        live_config.default_trusted_area_context
+        if trusted_area_context is None
+        else trusted_area_context
+    )
+    try:
+        current_time = now()
+        if current_time.tzinfo is None:
+            current_time = current_time.replace(tzinfo=UTC)
+        sent_at = current_time.astimezone(UTC) - timedelta(seconds=message_age_seconds)
+        request = AIObservationRequest(
+            message_text=text,
+            sent_at=sent_at,
+            message_age_seconds=message_age_seconds,
+            trusted_area_context=context,
+            matched_keywords=matched_keywords,
+            notify_all=notify_all,
+            reply_context=reply_context,
+        )
+    except (AttributeError, OverflowError, TypeError, ValueError) as error:
+        raise ConfigurationError("Invalid ai-check input") from error
+
+    started = monotonic()
+    client: _AIClient | None = None
+    payload_and_exit_code: tuple[dict[str, object], int] | None = None
+    try:
+        client = client_factory(live_config)
+        if client is None:
+            raise ConfigurationError("AI check could not initialize an enabled OpenAI client")
+        outcome = await client.classify(
+            request,
+            timeout_seconds=live_config.operation_timeout_seconds,
+        )
+        if isinstance(outcome, (AIObservationSuccess, AIObservationFailure)):
+            payload_and_exit_code = _ai_check_payload(outcome)
+        else:
+            payload_and_exit_code = _unexpected_ai_check_payload(
+                live_config,
+                elapsed_seconds=max(0.0, round(monotonic() - started, 3)),
+            )
+    except asyncio.CancelledError:
+        raise
+    except ConfigurationError:
+        raise
+    except Exception:
+        payload_and_exit_code = _unexpected_ai_check_payload(
+            live_config,
+            elapsed_seconds=max(0.0, round(monotonic() - started, 3)),
+        )
+    finally:
+        if client is not None:
+            try:
+                await client.close()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.error("AI check client close failed")
+
+    if payload_and_exit_code is None:  # pragma: no cover - defensive invariant.
+        payload_and_exit_code = _unexpected_ai_check_payload(
+            live_config,
+            elapsed_seconds=max(0.0, round(monotonic() - started, 3)),
+        )
+    payload, exit_code = payload_and_exit_code
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return exit_code
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-    _configure_logging()
+    command = args.command or "run"
+    _configure_logging(stdout_is_data=command == "ai-check")
 
     try:
-        command = args.command or "run"
+        ai_check_input: tuple[str, tuple[str, ...]] | None = None
+        if command == "ai-check":
+            ai_check_input = _read_ai_check_input(parser, args)
         if command == "run":
             asyncio.run(_run_monitor_with_signals(load_config()))
         elif command == "list-chats":
@@ -204,6 +470,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             asyncio.run(_generate_session())
         elif command == "check":
             return _check_text(args.text, load_config())
+        elif command == "ai-check":
+            if ai_check_input is None:  # pragma: no cover - guarded before logging.
+                parser.error("ai-check input is missing")
+            text, matched_keywords = ai_check_input
+            return asyncio.run(
+                _run_ai_check(
+                    text,
+                    load_config(),
+                    matched_keywords=matched_keywords,
+                    notify_all=args.notify_all,
+                    trusted_area_context=args.trusted_area_context,
+                    reply_context=args.reply_context,
+                    message_age_seconds=args.message_age_seconds,
+                )
+            )
         else:  # pragma: no cover - argparse constrains the choices.
             parser.error(f"Unknown command: {command}")
     except ConfigurationError as error:

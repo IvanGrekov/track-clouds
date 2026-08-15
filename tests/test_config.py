@@ -40,6 +40,92 @@ keywords_to_skip = ["spam"]
     assert config.sources[1].peer == -1001234567890
     assert config.sources[1].keywords == ("release", "incident")
     assert config.sources[1].keywords_to_skip == ("spam",)
+    assert config.ai_observation.enabled is False
+    assert config.ai_observation.prompt_bundle_path == (tmp_path / "prompts").resolve()
+    assert config.ai_observation.policy_prompt_path == (tmp_path / "policy-prompt.txt").resolve()
+
+
+def test_load_config_builds_nested_ai_observation_config(tmp_path: Path) -> None:
+    config_dir = tmp_path / "deployment"
+    config_dir.mkdir()
+    path = config_dir / "monitor.toml"
+    _write_config(
+        path,
+        """
+notification_mode = "bot"
+
+[ai_observation]
+enabled = true
+model = "test-model-snapshot"
+prompt_bundle_path = "prompt-bundle"
+policy_prompt_path = "private/mobility-test-policy.txt"
+default_trusted_area_context = " Львів "
+operation_timeout_seconds = 25
+request_attempts = 3
+retry_base_seconds = 1
+retry_max_seconds = 4
+reasoning_effort = "low"
+max_output_tokens = 512
+store_responses = false
+
+[[sources]]
+peer = "@updates"
+notify_all = true
+trusted_area_context = " Львівська область "
+""",
+    )
+
+    config = load_config(path)
+
+    assert config.ai_observation.enabled is True
+    assert config.ai_observation.model == "test-model-snapshot"
+    assert config.ai_observation.prompt_bundle_path == (config_dir / "prompt-bundle").resolve()
+    assert (
+        config.ai_observation.policy_prompt_path
+        == (config_dir / "private" / "mobility-test-policy.txt").resolve()
+    )
+    assert config.ai_observation.default_trusted_area_context == "Львів"
+    assert config.ai_observation.operation_timeout_seconds == 25.0
+    assert config.ai_observation.request_attempts == 3
+    assert config.ai_observation.retry_base_seconds == 1.0
+    assert config.ai_observation.retry_max_seconds == 4.0
+    assert config.ai_observation.reasoning_effort == "low"
+    assert config.ai_observation.max_output_tokens == 512
+    assert config.ai_observation.store_responses is False
+    assert config.sources[0].trusted_area_context == "Львівська область"
+
+
+def test_load_config_keeps_absolute_ai_prompt_paths(tmp_path: Path) -> None:
+    absolute_bundle = (tmp_path / "shared-prompts").resolve()
+    absolute_policy = (tmp_path / "private" / "policy-prompt.txt").resolve()
+    path = tmp_path / "config.toml"
+    _write_config(
+        path,
+        f"""
+[ai_observation]
+prompt_bundle_path = {str(absolute_bundle)!r}
+policy_prompt_path = {str(absolute_policy)!r}
+
+[[sources]]
+peer = "@updates"
+notify_all = true
+""",
+    )
+
+    config = load_config(path)
+
+    assert config.ai_observation.prompt_bundle_path == absolute_bundle
+    assert config.ai_observation.policy_prompt_path == absolute_policy
+
+
+def test_repository_example_config_is_valid() -> None:
+    repository_root = Path(__file__).resolve().parents[1]
+
+    config = load_config(repository_root / "config.example.toml")
+
+    assert config.ai_observation.enabled is False
+    assert config.ai_observation.prompt_bundle_path == repository_root / "prompts"
+    assert config.ai_observation.policy_prompt_path == repository_root / "policy-prompt.txt"
 
 
 def test_load_config_reports_missing_file(tmp_path: Path) -> None:
@@ -71,6 +157,75 @@ notify_all = true
     )
 
     with pytest.raises(ConfigurationError, match="unknown_option"):
+        load_config(path)
+
+
+def test_load_config_rejects_unknown_ai_observation_options(tmp_path: Path) -> None:
+    option = "unknown_ai_option"
+    path = tmp_path / "config.toml"
+    _write_config(
+        path,
+        f"""
+[ai_observation]
+{option} = true
+
+[[sources]]
+peer = "@updates"
+notify_all = true
+""",
+    )
+
+    with pytest.raises(ConfigurationError, match=rf"Unknown ai_observation.*{option}"):
+        load_config(path)
+
+
+def test_load_config_requires_ai_observation_to_be_a_table(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    _write_config(
+        path,
+        """
+ai_observation = true
+
+[[sources]]
+peer = "@updates"
+notify_all = true
+""",
+    )
+
+    with pytest.raises(ConfigurationError, match="ai_observation must be a TOML table"):
+        load_config(path)
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("enabled", "1"),
+        ("operation_timeout_seconds", "nan"),
+        ("request_attempts", "0"),
+        ("max_output_tokens", "2049"),
+        ("policy_prompt_path", '""'),
+        ("policy_prompt_path", "42"),
+    ],
+)
+def test_load_config_rejects_invalid_ai_observation_values(
+    tmp_path: Path,
+    option: str,
+    value: str,
+) -> None:
+    path = tmp_path / "config.toml"
+    _write_config(
+        path,
+        f"""
+[ai_observation]
+{option} = {value}
+
+[[sources]]
+peer = "@updates"
+notify_all = true
+""",
+    )
+
+    with pytest.raises(ConfigurationError, match=option):
         load_config(path)
 
 

@@ -6,7 +6,18 @@ services:
     env_file:
       - .env
     volumes:
-      - ./config.toml:/app/config.toml:ro
+      - type: bind
+        source: ./config.toml
+        target: /app/config.toml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./policy-prompt.txt
+        target: /app/policy-prompt.txt
+        read_only: true
+        bind:
+          create_host_path: false
       - telegram-monitor-state:/app/.state
 
 volumes:

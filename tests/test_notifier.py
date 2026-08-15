@@ -10,6 +10,7 @@ from threading import Event
 import httpx
 import pytest
 
+import telegram_monitor.notifier as notifier_module
 from telegram_monitor.models import ConfigurationError
 from telegram_monitor.notifier import (
     NotificationError,
@@ -309,9 +310,56 @@ async def test_broadcast_removes_blocked_subscriber_and_continues(
     await notifier.close()
 
 
+@pytest.mark.asyncio
+async def test_broadcast_continues_after_unexpected_recipient_failure_without_rebroadcast(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="telegram_monitor.notifier")
+    notifier = TelegramBotNotifier(
+        "123:secret",
+        ":memory:",
+        transport=httpx.MockTransport(lambda request: httpx.Response(200)),
+        store=_open_store(1, 2, 3),
+    )
+    calls: list[tuple[int, str]] = []
+
+    async def send_with_unexpected_failure(
+        chat_id: int,
+        text: str,
+        *,
+        purpose: str,
+        remove_invalid_subscriber: bool,
+    ) -> bool:
+        assert purpose == "alert"
+        assert remove_invalid_subscriber is True
+        calls.append((chat_id, text))
+        if chat_id == 2:
+            raise RuntimeError("private-transport-detail")
+        return True
+
+    monkeypatch.setattr(notifier, "_send_with_retries", send_with_unexpected_failure)
+
+    await notifier.send("one logical alert")
+    await notifier.close()
+
+    assert calls == [
+        (1, "one logical alert"),
+        (2, "one logical alert"),
+        (3, "one logical alert"),
+    ]
+    assert (
+        "Bot alert delivery failed unexpectedly; continuing broadcast "
+        "(chat_id=2, delivered=1, failed=1, total=3, remaining=1)" in caplog.text
+    )
+    assert "status=partial, delivered=2, failed=1, total=3, failed_chat_ids=2" in caplog.text
+    assert "private-transport-detail" not in caplog.text
+
+
 def test_bot_notifier_requires_token(monkeypatch: pytest.MonkeyPatch, tmp_path: object) -> None:
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(notifier_module, "load_dotenv", lambda: None)
 
     with pytest.raises(ConfigurationError, match="TELEGRAM_BOT_TOKEN"):
         TelegramBotNotifier.from_environment(":memory:")

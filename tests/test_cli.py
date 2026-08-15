@@ -5,7 +5,7 @@ import logging
 import pytest
 
 from telegram_monitor.cli import _DIFFERENCE_LOG_FILTER, _check_text, _configure_logging
-from telegram_monitor.models import MonitorConfig, SourceRule
+from telegram_monitor.models import AIObservationConfig, MonitorConfig, SourceRule
 
 
 def test_configure_logging_hides_only_channel_difference_info(
@@ -13,6 +13,7 @@ def test_configure_logging_hides_only_channel_difference_info(
 ) -> None:
     updates_logger = logging.getLogger("telethon.client.updates")
     monkeypatch.setenv("LOG_LEVEL", "INFO")
+    monkeypatch.setattr(logging, "basicConfig", lambda **kwargs: None)
     _configure_logging()
 
     matching_record = logging.LogRecord(
@@ -113,3 +114,15 @@ def test_check_text_applies_keywords_to_skip(
     assert capsys.readouterr().out == "MATCH @chat: k8s\n"
     assert _check_text("is k8s released?  \n", config) == 1
     assert capsys.readouterr().out == "SKIP  @chat: ends with ?\n"
+
+
+def test_check_text_remains_deterministic_when_ai_observation_is_enabled(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = MonitorConfig(
+        sources=(SourceRule(peer="@chat", keywords=("road",)),),
+        ai_observation=AIObservationConfig(enabled=True),
+    )
+
+    assert _check_text("road is blocked", config) == 0
+    assert capsys.readouterr().out == "MATCH @chat: road\n"

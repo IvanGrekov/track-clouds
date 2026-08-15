@@ -1,6 +1,8 @@
 .git
 .env
 config.toml
+policy-prompt.txt
+prompts/*/policy-prompt.txt
 .venv
 *.session
 *.session-journal
