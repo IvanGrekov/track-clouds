@@ -135,10 +135,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="trusted area context; defaults to ai_observation.default_trusted_area_context",
     )
     ai_check.add_argument(
-        "--reply-context",
-        help="optional reply text supplied directly without contacting Telegram",
-    )
-    ai_check.add_argument(
         "--message-age-seconds",
         type=_non_negative_integer,
         default=0,
@@ -377,7 +373,6 @@ async def _run_ai_check(
     matched_keywords: tuple[str, ...],
     notify_all: bool,
     trusted_area_context: str | None,
-    reply_context: str | None,
     message_age_seconds: int,
     client_factory: _AIClientFactory = build_openai_observation_client,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -401,7 +396,6 @@ async def _run_ai_check(
             trusted_area_context=context,
             matched_keywords=matched_keywords,
             notify_all=notify_all,
-            reply_context=reply_context,
         )
     except (AttributeError, OverflowError, TypeError, ValueError) as error:
         raise ConfigurationError("Invalid ai-check input") from error
@@ -481,7 +475,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                     matched_keywords=matched_keywords,
                     notify_all=args.notify_all,
                     trusted_area_context=args.trusted_area_context,
-                    reply_context=args.reply_context,
                     message_age_seconds=args.message_age_seconds,
                 )
             )

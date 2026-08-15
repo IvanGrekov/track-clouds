@@ -211,8 +211,7 @@ trusted_area_context = "Львів та околиці"
 Ізольований `AsyncOpenAI` Responses client формує request з поточних prompt-ів і вхідних
 даних, виконує контрольовані retries в одному timeout budget, перевіряє Structured Output та
 повертає типізоване рішення або нормалізований технічний статус. `timeout`, `rate_limited`,
-`refusal`, `api_error`, `invalid_response` і `reply_context_error` не перетворюються на
-штучний `review`.
+`refusal`, `api_error` та `invalid_response` не перетворюються на штучний `review`.
 
 Для semantic result `unrelated_content` є reject-кодом. `no_location` і `no_event`
 можуть означати `review`, якщо текст потенційно корисний, але йому бракує
@@ -221,8 +220,8 @@ trusted_area_context = "Львів та околиці"
 `temporal_relevance = "historical"`.
 
 Коли observation увімкнений, notification worker викликає його лише після source/filter,
-deduplication та automatic-forward перевірок. Reply lookup і OpenAI ділять один
-end-to-end budget до 30 секунд. `accept`, `reject`, `review` і технічна помилка однаково
+deduplication та automatic-forward перевірок. Уся AI-операція має один end-to-end budget
+до 30 секунд. `accept`, `reject`, `review` і технічна помилка однаково
 завершуються доставкою одного alert; Telegram retries повторюють уже сформований рядок і не
 створюють нового OpenAI request. Створення client-а не виконує live API probe: credentials,
 доступ до моделі та мережі фактично перевіряються під час першого request. Setup failure
@@ -231,7 +230,7 @@ end-to-end budget до 30 секунд. `accept`, `reject`, `review` і техн
 Успішний alert містить блок `AI review:` із `Decision`, `Confidence`, `Location`, `Event`,
 `Relevance`, `Code reason`, `Reason` і загальним `Delay` у секундах з трьома знаками
 після крапки, наприклад `Delay: 0.842 s`. `Delay` — це повна тривалість
-observation від його початку до готового результату, включно з отриманням reply context.
+observation поточного повідомлення від її початку до готового результату.
 Model і token usage у Telegram не показуються, але залишаються доступними як безпечні
 runtime metadata для application logs. Технічний блок містить лише `Status` та
 однореченнєвий `Description`.
@@ -278,8 +277,6 @@ telegram-monitor ai-check --live --stdin \
 Рівно одне джерело тексту є обов’язковим: positional argument або `--stdin`.
 Доступні додаткові входи:
 
-- `--reply-context TEXT` — явно передати текст Telegram-повідомлення, на яке це є
-  reply;
 - `--trusted-area-context TEXT` — перевизначити глобальний trusted area для цього
   виклику;
 - `--matched-keyword TEXT` — додати prefilter match; flag можна повторювати;
@@ -340,7 +337,8 @@ subscriber store, не надсилає Telegram alert і не змінює pers
 
 `api_latency_seconds` — тривалість усього ізольованого classification client cycle:
 HTTP attempts, retries, backoff, parsing і semantic validation. Це число в секундах; воно
-не включає Telegram reply lookup, який враховується в `Delay` production alert-а.
+не включає підготовку observation report, яка додатково враховується в `Delay` production
+alert-а.
 
 Exit code `2` означає невірні arguments або configuration/resources error, `130` —
 переривання користувачем. Команда не додає до output API key, raw prompts, raw API
@@ -505,7 +503,7 @@ outgoing-повідомлення. Повторний Telegram update з тим 
 
 Успішний AI log містить лише decision/confidence/reason code, timing у секундах та
 безпечні metadata;
-технічний результат записується на рівні `ERROR`. Message/reply text, location, event,
+технічний результат записується на рівні `ERROR`. Message text, location, event,
 reason, raw response, exception, prompt і API key у ці записи не додаються.
 
 ## Перевірка коду
@@ -520,7 +518,7 @@ reason, raw response, exception, prompt і API key у ці записи не д�
 Тести не підключаються до Telegram чи OpenAI, не потребують реальних credentials і
 перевіряють nested TOML, межі значень, bundle validation, стабільність `prompt_hash`,
 строгий parsing, формування Responses API request, retries, єдиний timeout budget і
-нормалізацію помилок, reply context, pipeline deduplication, formatter та lifecycle повністю
+нормалізацію помилок, pipeline deduplication, formatter та lifecycle повністю
 офлайн через fake SDK/observer clients. `ai-check` тестується через injected fake
 client factory; pytest і CI ніколи не запускають `ai-check --live` проти реального API.
 

@@ -82,7 +82,7 @@ flowchart LR
 | [`prompt_bundle.py`](src/telegram_monitor/prompt_bundle.py) | Валідація поточного prompt bundle та обчислення `prompt_hash` |
 | [`ai_models.py`](src/telegram_monitor/ai_models.py) | Typed semantic result, technical-status enum і строгий parser AI-відповіді |
 | [`openai_client.py`](src/telegram_monitor/openai_client.py) | Ізольований AsyncOpenAI Responses client, timeout/retry policy і normalized outcome |
-| [`ai_observer.py`](src/telegram_monitor/ai_observer.py) | Reply context, спільний end-to-end deadline та fail-open observation report |
+| [`ai_observer.py`](src/telegram_monitor/ai_observer.py) | Спільний end-to-end deadline та fail-open observation report |
 | [`client.py`](src/telegram_monitor/client.py) | Створення Telethon client із `StringSession`, reconnect і catch-up |
 | [`registry.py`](src/telegram_monitor/registry.py) | Резолв username/ID у стабільні Telegram dialog IDs |
 | [`matcher.py`](src/telegram_monitor/matcher.py) | Unicode-нормалізація та пошук keyword fragments |
@@ -110,8 +110,8 @@ flowchart LR
    - Saved Messages mode не потребує окремого background task;
    - bot mode викликає `getMe`, перевіряє відсутність webhook і запускає `getUpdates` polling.
 10. Запускається notification worker і обробляється bounded startup buffer.
-11. Worker для кожного accepted job виконує optional reply lookup та один logical AI
-    observation, формує один alert і передає незмінний рядок у Telegram delivery retries.
+11. Worker для кожного accepted job виконує один logical AI observation, формує один alert
+    і передає незмінний рядок у Telegram delivery retries.
 12. Основна coroutine чекає відключення Telethon до сигналу або фатальної помилки bot polling.
 
 ## Контракт AI-відповіді
@@ -148,7 +148,7 @@ consistency між рішенням, `reason_code`, локацією, подіє
 Некоректний payload завершується `AIResponseValidationError` і не перетворюється на `review`.
 
 Технічний результат представлений окремим enum `AIObservationTechnicalStatus`: `timeout`,
-`rate_limited`, `refusal`, `api_error`, `invalid_response` або `reply_context_error`. Тому
+`rate_limited`, `refusal`, `api_error` або `invalid_response`. Тому
 transport/API failure неможливо переплутати із семантичним `review`.
 
 ## Ізольований OpenAI client
@@ -176,8 +176,8 @@ JSON-вхід, configured model, reasoning effort, `max_output_tokens`, `store` 
 Client outcome повертає `api_latency_seconds`: тривалість усього ізольованого
 classification client cycle, включно з HTTP attempts, retries, backoff, parsing і semantic
 validation. Observation report додає `elapsed_seconds` — повну тривалість
-observation від його початку до готового результату, включно з reply context lookup,
-а також optional `api_latency_seconds`. Обидва поля вимірюються в секундах;
+observation поточного повідомлення від його початку до готового результату, а також
+optional `api_latency_seconds`. Обидва поля вимірюються в секундах;
 зовнішні timing-поля не використовують мілісекунди.
 
 Явний Structured Outputs refusal нормалізується як `refusal` до запуску JSON parser-а.
@@ -188,16 +188,15 @@ Billing/quota errors не повторюються. Помилки локаль�
 нормалізує fail-open як `api_error` до Telegram-доставки. Жоден із цих станів не стає
 `review`.
 
-`reply_context_error` не створюється ізольованим client-ом: цей статус належить
-`AIObserver`, який отримує reply через Telethon. Зовнішнє скасування coroutine не маскується
-як технічний AI-статус, щоб graceful shutdown залишався працездатним.
+Зовнішнє скасування coroutine не маскується як технічний AI-статус, щоб graceful shutdown
+залишався працездатним.
 
 ## Ручна AI-перевірка
 
 `telegram-monitor ai-check --live` — окремий one-shot шлях до ізольованого
 Responses client-а. Він приймає message text як positional argument або через
-`--stdin`, а також optional reply context, trusted area, matched keywords, `notify_all` і
-message age. Команда використовує configured model, поточні prompt bundle,
+`--stdin`, а також optional trusted area, matched keywords, `notify_all` і message age.
+Команда використовує configured model, поточні prompt bundle,
 private policy і schema, timeout та retry policy, але не викликає `run_monitor()`.
 
 ```text
@@ -216,9 +215,8 @@ CLI
 мережевого запиту.
 
 Цей path не створює Telethon client, notifier чи subscriber store, не надсилає
-Telegram alert і не змінює persistent state. Reply context можна передати лише
-явно; Telegram reply lookup тут не виконується. Тому manual command перевіряє OpenAI
-integration, а не production Telegram pipeline.
+Telegram alert і не змінює persistent state. Manual command перевіряє OpenAI integration,
+а не production Telegram pipeline.
 
 Semantic `accept`, `reject` і `review` є успішними відповідями з exit code `0`.
 Configuration/usage failures повертають `2`, normalized technical results — `3`,
@@ -256,17 +254,17 @@ raw API response, raw exception або окрему копію input envelope. �
    створив другий alert.
 11. Автоматична копія channel post у linked discussion пропускається, якщо обидва джерела
    відстежуються. Ручні user forwards не пропускаються.
-12. Створюється immutable queue job із `MessageSnapshot`, source context і Telethon message;
-    handler не робить reply/OpenAI network awaits.
+12. Створюється immutable queue job із `MessageSnapshot` і source context; handler не робить
+    OpenAI network awaits.
 13. Job без блокуючих network calls додається в bounded `asyncio.Queue`.
-14. Один background worker починає спільний deadline до 30 секунд, за потреби отримує
-    `reply_context` і передає залишок budget ізольованому OpenAI client-у.
+14. Один background worker починає спільний deadline до 30 секунд і передає залишок budget
+    ізольованому OpenAI client-у.
 15. Семантичний або технічний observation report передається `render_notification()`, який
     створює один plain-text alert до Telegram limit 4096 символів. Успішний AI-блок містить
     `Decision`, `Confidence`, `Location`, `Event`, `Relevance`, `Code reason`, `Reason` і
     `Delay` у секундах з трьома знаками після крапки, наприклад `Delay: 0.842 s`;
-    це повний `elapsed_seconds`, включно з reply context lookup. Технічний блок
-    містить лише `Status` і `Description`.
+    це повний `elapsed_seconds` observation. Технічний блок містить лише `Status` і
+    `Description`.
 16. Dedup key commit-иться до Telegram transport retries. Усі retries і bot subscribers
     отримують той самий вже сформований рядок та не запускають AI повторно.
 
@@ -443,7 +441,7 @@ Retryable Bot API delivery errors записуються як `WARNING` з `chat
 записуються як `ERROR`; лог також попереджає, що durable retry не запланований. Alert text,
 Bot API request payload та token у ці delivery-логи не додаються.
 
-AI logs не містять message/reply text, location, event, reason, raw response/refusal,
+AI logs не містять message text, location, event, reason, raw response/refusal,
 exception, prompt або API key. Неочікувана observer-помилка також спочатку нормалізується до
 `api_error`, а вже потім записується без traceback чи raw exception text.
 
@@ -473,7 +471,7 @@ Output `docker compose config` не можна публікувати: Compose �
 Тести не звертаються до реального Telegram. HTTP Bot API замінений `httpx.MockTransport`, а
 Telethon events, dialogs і client lifecycle перевіряються fake-об'єктами або локально
 сконструйованими updates. AI configuration, prompt bundle, hash, typed response, parser,
-ізольований Responses client, observer, reply deadline та pipeline integration тестуються
+ізольований Responses client, observer deadline та pipeline integration тестуються
 через fake SDK/observer objects без OpenAI API requests. CLI-тести `ai-check` так само
 інжектять fake client factory: pytest і CI ніколи не запускають live OpenAI command.
 
@@ -494,7 +492,7 @@ Telethon events, dialogs і client lifecycle перевіряються fake-о�
 - точні Responses API request parameters та `store = false`;
 - total-attempt semantics, bounded backoff і один caller-supplied timeout budget;
 - refusal, rate limit, quota, timeout, API і invalid-response normalization;
-- reply lookup, `reply_context_error` і спільний 30-секундний deadline;
+- observer timeout, cancellation і спільний 30-секундний deadline;
 - один logical observation попри duplicate updates і Telegram delivery retries;
 - AI formatter labels, technical descriptions та Telegram limit 4096;
 - fail-open observer setup і коректне закриття lifecycle resources;

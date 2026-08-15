@@ -29,9 +29,6 @@ _TECHNICAL_STATUS_DESCRIPTIONS = {
     AIObservationTechnicalStatus.INVALID_RESPONSE: (
         "Відповідь AI не відповідала очікуваній схемі або правилам узгодженості."
     ),
-    AIObservationTechnicalStatus.REPLY_CONTEXT_ERROR: (
-        "Не вдалося отримати контекст повідомлення, на яке була надіслана відповідь."
-    ),
 }
 
 

@@ -105,7 +105,6 @@ class AIObserver(Protocol):
         self,
         snapshot: MessageSnapshot,
         *,
-        telegram_message: object,
         trusted_area_context: str | None,
     ) -> AIObservationReport: ...
 
@@ -116,7 +115,7 @@ _ClientFactory: TypeAlias = Callable[[AIObservationConfig], OpenAIObservationCli
 
 
 class OpenAIMessageObserver:
-    """Fetch optional reply text and run one bounded OpenAI classification."""
+    """Run one bounded OpenAI classification for the current message."""
 
     def __init__(
         self,
@@ -145,7 +144,6 @@ class OpenAIMessageObserver:
         self,
         snapshot: MessageSnapshot,
         *,
-        telegram_message: object,
         trusted_area_context: str | None,
     ) -> AIObservationReport:
         started = self._monotonic()
@@ -159,16 +157,6 @@ class OpenAIMessageObserver:
         deadline = started + timeout_seconds
         try:
             async with asyncio.timeout(timeout_seconds):
-                try:
-                    reply_context = await self._reply_context(telegram_message)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    return self._local_failure(
-                        AIObservationTechnicalStatus.REPLY_CONTEXT_ERROR,
-                        started=started,
-                    )
-
                 remaining = deadline - self._monotonic()
                 if remaining <= 0:
                     return self._local_failure(
@@ -180,7 +168,6 @@ class OpenAIMessageObserver:
                     request = self._build_request(
                         snapshot,
                         trusted_area_context=trusted_area_context,
-                        reply_context=reply_context,
                     )
                     outcome = await self._client.classify(
                         request,
@@ -206,29 +193,11 @@ class OpenAIMessageObserver:
                 started=started,
             )
 
-    @staticmethod
-    async def _reply_context(telegram_message: object) -> str | None:
-        if getattr(telegram_message, "reply_to_msg_id", None) is None:
-            return None
-
-        get_reply_message = getattr(telegram_message, "get_reply_message", None)
-        if not callable(get_reply_message):
-            raise RuntimeError("Telegram reply lookup is unavailable")
-        reply = await get_reply_message()
-        if reply is None:
-            raise RuntimeError("Telegram reply context is unavailable")
-
-        raw_text = getattr(reply, "raw_text", None)
-        if not isinstance(raw_text, str):
-            return None
-        return raw_text.strip() or None
-
     def _build_request(
         self,
         snapshot: MessageSnapshot,
         *,
         trusted_area_context: str | None,
-        reply_context: str | None,
     ):
         # Local import avoids exposing an input-bearing object through observer reprs.
         from .openai_client import AIObservationRequest
@@ -245,7 +214,6 @@ class OpenAIMessageObserver:
         )
         return AIObservationRequest(
             message_text=snapshot.text,
-            reply_context=reply_context,
             sent_at=sent_at,
             message_age_seconds=message_age_seconds,
             trusted_area_context=trusted_area_context,
@@ -337,10 +305,9 @@ class UnavailableAIObserver:
         self,
         snapshot: MessageSnapshot,
         *,
-        telegram_message: object,
         trusted_area_context: str | None,
     ) -> AIObservationReport:
-        del snapshot, telegram_message, trusted_area_context
+        del snapshot, trusted_area_context
         started = self._monotonic()
         return AIObservationReport(
             result=None,

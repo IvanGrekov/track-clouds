@@ -72,7 +72,6 @@ class AIObservationRequest:
     trusted_area_context: str | None = field(default=None, repr=False)
     matched_keywords: tuple[str, ...] | list[str] = field(default=(), repr=False)
     notify_all: bool = False
-    reply_context: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.message_text, str) or not self.message_text.strip():
@@ -99,13 +98,14 @@ class AIObservationRequest:
         if not isinstance(self.notify_all, bool):
             raise ValueError("AI observation notify_all must be boolean")
 
-        for field_name in ("trusted_area_context", "reply_context"):
-            value = getattr(self, field_name)
-            if value is None:
-                continue
-            if not isinstance(value, str):
-                raise ValueError(f"AI observation {field_name} must be a string or null")
-            object.__setattr__(self, field_name, value.strip() or None)
+        if self.trusted_area_context is not None:
+            if not isinstance(self.trusted_area_context, str):
+                raise ValueError("AI observation trusted_area_context must be a string or null")
+            object.__setattr__(
+                self,
+                "trusted_area_context",
+                self.trusted_area_context.strip() or None,
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -539,7 +539,6 @@ class OpenAIObservationClient:
     def _serialize_input(self, request: AIObservationRequest) -> str:
         payload = {
             "message_text": request.message_text,
-            "reply_context": request.reply_context,
             "sent_at": request.sent_at.isoformat(),
             "message_age_seconds": request.message_age_seconds,
             "trusted_area_context": request.trusted_area_context,

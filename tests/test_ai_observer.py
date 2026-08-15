@@ -4,7 +4,6 @@ import asyncio
 import logging
 import math
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -109,24 +108,6 @@ class StubClient(OpenAIObservationClient):
         self.close_calls += 1
 
 
-class ReplyMessage:
-    def __init__(self, *, reply_to_msg_id: int | None, outcome: object = None) -> None:
-        self.reply_to_msg_id = reply_to_msg_id
-        self.outcome = outcome
-        self.calls = 0
-
-    async def get_reply_message(self) -> object:
-        self.calls += 1
-        if isinstance(self.outcome, BaseException):
-            raise self.outcome
-        if callable(self.outcome):
-            value = self.outcome()
-            if asyncio.iscoroutine(value):
-                return await value
-            return value
-        return self.outcome
-
-
 def _observer(
     client: StubClient,
     *,
@@ -146,15 +127,13 @@ def _observer(
 
 
 @pytest.mark.asyncio
-async def test_observe_without_reply_builds_request_at_call_time() -> None:
+async def test_observe_builds_request_at_call_time() -> None:
     client = StubClient([_success()])
     now = datetime(2026, 8, 10, 9, 56, 5, tzinfo=UTC)
     observer = _observer(client, now=lambda: now)
-    telegram_message = ReplyMessage(reply_to_msg_id=None)
 
     report = await observer.observe(
         _snapshot(),
-        telegram_message=telegram_message,
         trusted_area_context="Львів",
     )
 
@@ -162,10 +141,8 @@ async def test_observe_without_reply_builds_request_at_call_time() -> None:
     assert report.status is None
     assert report.api_latency_seconds == 0.7
     assert report.token_usage == AIObservationTokenUsage(300, 50, 350)
-    assert telegram_message.calls == 0
     assert len(client.requests) == 1
     request = client.requests[0]
-    assert request.reply_context is None
     assert request.message_age_seconds == 45
     assert request.trusted_area_context == "Львів"
     assert request.matched_keywords == ("перекри",)
@@ -173,91 +150,13 @@ async def test_observe_without_reply_builds_request_at_call_time() -> None:
 
 
 @pytest.mark.asyncio
-async def test_observe_sends_only_trimmed_reply_raw_text() -> None:
-    marker = "  Контекст попереднього повідомлення  "
-    client = StubClient([_success()])
-    observer = _observer(client)
-    telegram_message = ReplyMessage(
-        reply_to_msg_id=12,
-        outcome=SimpleNamespace(
-            raw_text=marker,
-            sender_id=999,
-            username="must-not-be-copied",
-            media=object(),
-        ),
-    )
-
-    await observer.observe(
-        _snapshot(),
-        telegram_message=telegram_message,
-        trusted_area_context=None,
-    )
-
-    assert telegram_message.calls == 1
-    assert client.requests[0].reply_context == marker.strip()
-    assert "must-not-be-copied" not in repr(client.requests[0])
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("raw_text", [None, "", "   "])
-async def test_media_or_empty_reply_is_successful_null_context(raw_text: object) -> None:
-    client = StubClient([_success()])
-    observer = _observer(client)
-    telegram_message = ReplyMessage(
-        reply_to_msg_id=12,
-        outcome=SimpleNamespace(raw_text=raw_text, media=object()),
-    )
-
-    report = await observer.observe(
-        _snapshot(),
-        telegram_message=telegram_message,
-        trusted_area_context=None,
-    )
-
-    assert report.status is None
-    assert client.requests[0].reply_context is None
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "telegram_message",
-    [
-        ReplyMessage(reply_to_msg_id=12, outcome=None),
-        ReplyMessage(reply_to_msg_id=12, outcome=RuntimeError("private marker")),
-        SimpleNamespace(reply_to_msg_id=12),
-    ],
-)
-async def test_reply_lookup_failure_skips_openai_and_is_safely_normalized(
-    telegram_message: object,
-) -> None:
-    client = StubClient([_success()])
-    observer = _observer(client)
-
-    report = await observer.observe(
-        _snapshot(text="private message marker"),
-        telegram_message=telegram_message,
-        trusted_area_context=None,
-    )
-
-    assert report.status is AIObservationTechnicalStatus.REPLY_CONTEXT_ERROR
-    assert report.result is None
-    assert report.attempts == 0
-    assert client.requests == []
-    assert "private" not in repr(report)
-
-
-@pytest.mark.asyncio
-async def test_reply_lookup_and_api_share_one_remaining_deadline() -> None:
+async def test_api_uses_remaining_operation_deadline() -> None:
     moments = iter((100.0, 101.25, 101.75, 102.0))
     client = StubClient([_success()])
     observer = _observer(client, monotonic=lambda: next(moments))
 
     report = await observer.observe(
         _snapshot(),
-        telegram_message=ReplyMessage(
-            reply_to_msg_id=12,
-            outcome=SimpleNamespace(raw_text="Контекст"),
-        ),
         trusted_area_context="Львів",
     )
 
@@ -266,17 +165,13 @@ async def test_reply_lookup_and_api_share_one_remaining_deadline() -> None:
 
 
 @pytest.mark.asyncio
-async def test_expired_budget_after_reply_skips_openai() -> None:
+async def test_expired_budget_before_api_skips_openai() -> None:
     moments = iter((100.0, 131.0, 131.0))
     client = StubClient([_success()])
     observer = _observer(client, monotonic=lambda: next(moments))
 
     report = await observer.observe(
         _snapshot(),
-        telegram_message=ReplyMessage(
-            reply_to_msg_id=12,
-            outcome=SimpleNamespace(raw_text="Контекст"),
-        ),
         trusted_area_context=None,
     )
 
@@ -285,24 +180,23 @@ async def test_expired_budget_after_reply_skips_openai() -> None:
 
 
 @pytest.mark.asyncio
-async def test_deadline_interrupts_blocked_reply_lookup() -> None:
+async def test_deadline_interrupts_blocked_client() -> None:
     waiting = asyncio.Event()
 
     async def block_forever() -> object:
         await waiting.wait()
-        return SimpleNamespace(raw_text="late")
+        return _success()
 
-    client = StubClient([_success()])
+    client = StubClient([block_forever])
     observer = _observer(client, config=_config(operation_timeout_seconds=0.01))
 
     report = await observer.observe(
         _snapshot(),
-        telegram_message=ReplyMessage(reply_to_msg_id=12, outcome=block_forever),
         trusted_area_context=None,
     )
 
     assert report.status is AIObservationTechnicalStatus.TIMEOUT
-    assert client.requests == []
+    assert len(client.requests) == 1
 
 
 @pytest.mark.asyncio
@@ -313,13 +207,12 @@ async def test_external_cancellation_propagates() -> None:
     async def block_forever() -> object:
         started.set()
         await waiting.wait()
-        return SimpleNamespace(raw_text="late")
+        return _success()
 
-    observer = _observer(StubClient([_success()]))
+    observer = _observer(StubClient([block_forever]))
     task = asyncio.create_task(
         observer.observe(
             _snapshot(),
-            telegram_message=ReplyMessage(reply_to_msg_id=12, outcome=block_forever),
             trusted_area_context=None,
         )
     )
@@ -338,7 +231,6 @@ async def test_unexpected_client_error_is_api_error_without_raw_data() -> None:
 
     report = await observer.observe(
         _snapshot(text=marker),
-        telegram_message=ReplyMessage(reply_to_msg_id=None),
         trusted_area_context=None,
     )
 
@@ -360,7 +252,6 @@ async def test_client_failure_metadata_is_preserved() -> None:
 
     report = await observer.observe(
         _snapshot(),
-        telegram_message=ReplyMessage(reply_to_msg_id=None),
         trusted_area_context=None,
     )
 
@@ -378,7 +269,6 @@ async def test_result_completed_after_deadline_is_discarded() -> None:
 
     report = await observer.observe(
         _snapshot(),
-        telegram_message=ReplyMessage(reply_to_msg_id=None),
         trusted_area_context=None,
     )
 
@@ -395,7 +285,6 @@ async def test_observer_close_is_idempotent_and_post_close_observe_fails_open() 
     await observer.close()
     report = await observer.observe(
         _snapshot(),
-        telegram_message=ReplyMessage(reply_to_msg_id=None),
         trusted_area_context=None,
     )
 
@@ -534,12 +423,10 @@ async def test_unavailable_observer_returns_api_error_and_is_reusable() -> None:
 
     first = await observer.observe(
         _snapshot(text="first private marker"),
-        telegram_message=object(),
         trusted_area_context="private context",
     )
     second = await observer.observe(
         _snapshot(text="second private marker"),
-        telegram_message=object(),
         trusted_area_context=None,
     )
     await observer.close()
@@ -577,7 +464,6 @@ async def test_naive_telegram_timestamp_is_treated_as_utc() -> None:
 
     await observer.observe(
         snapshot,
-        telegram_message=ReplyMessage(reply_to_msg_id=None),
         trusted_area_context=None,
     )
 

@@ -226,10 +226,6 @@ def test_renders_reject_and_review_as_semantic_results(
             AIObservationTechnicalStatus.INVALID_RESPONSE,
             "Відповідь AI не відповідала очікуваній схемі або правилам узгодженості.",
         ),
-        (
-            AIObservationTechnicalStatus.REPLY_CONTEXT_ERROR,
-            "Не вдалося отримати контекст повідомлення, на яке була надіслана відповідь.",
-        ),
     ),
 )
 def test_renders_safe_technical_ai_observation(

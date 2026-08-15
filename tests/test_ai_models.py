@@ -161,7 +161,6 @@ def test_technical_statuses_are_separate_from_semantic_decisions() -> None:
         "refusal",
         "api_error",
         "invalid_response",
-        "reply_context_error",
     }
     assert not (
         {status.value for status in AIObservationTechnicalStatus}
