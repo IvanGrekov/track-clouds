@@ -297,16 +297,22 @@ class TelegramBotNotifier:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                LOGGER.exception(
-                    "Bot alert broadcast aborted unexpectedly "
+                # Do not bubble an unexpected per-recipient failure to the monitor's
+                # whole-alert retry loop. Subscribers processed earlier in this broadcast
+                # may already have received the alert, so repeating the broadcast could
+                # create duplicates for them. Exception details are intentionally omitted:
+                # a transport error can contain request data.
+                LOGGER.error(
+                    "Bot alert delivery failed unexpectedly; continuing broadcast "
                     "(chat_id=%s, delivered=%d, failed=%d, total=%d, remaining=%d)",
                     chat_id,
                     delivered,
-                    len(failed_chat_ids),
+                    len(failed_chat_ids) + 1,
                     total,
-                    total - position + 1,
+                    total - position,
                 )
-                raise
+                failed_chat_ids.append(chat_id)
+                continue
             if was_delivered:
                 delivered += 1
             else:

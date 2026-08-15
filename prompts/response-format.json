@@ -1,0 +1,59 @@
+{
+    "type": "json_schema",
+    "name": "telegram_mobility_observation",
+    "strict": true,
+    "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+            "decision",
+            "confidence",
+            "location",
+            "event",
+            "temporal_relevance",
+            "reason_code",
+            "reason"
+        ],
+        "properties": {
+            "decision": {
+                "type": "string",
+                "enum": ["accept", "reject", "review"]
+            },
+            "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+            },
+            "location": {
+                "type": ["string", "null"]
+            },
+            "event": {
+                "type": ["string", "null"]
+            },
+            "temporal_relevance": {
+                "type": "string",
+                "enum": ["current", "historical", "unclear"]
+            },
+            "reason_code": {
+                "type": "string",
+                "enum": [
+                    "meets_all_criteria",
+                    "spam_or_scam",
+                    "unrelated_content",
+                    "no_location",
+                    "no_event",
+                    "only_opinion_or_emotion",
+                    "political_commentary",
+                    "ambiguous_location",
+                    "ambiguous_event",
+                    "ambiguous_recency",
+                    "ambiguous_context",
+                    "historical_context"
+                ]
+            },
+            "reason": {
+                "type": "string"
+            }
+        }
+    }
+}

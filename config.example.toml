@@ -1,14 +1,36 @@
 # Copy this file to config.toml. The local config.toml is ignored by Git.
 
 # use saved_messages mode
-notification_mode = "saved_messages"
-notify_to = "me"
+# notification_mode = "saved_messages"
+# notify_to = "me"
 
-# or use bot mode
-notification_mode="bot"
-bot_subscriber_limit=10
+# Or use bot mode instead:
+notification_mode = "bot"
+bot_subscriber_limit = 10
 
 timezone = "Europe/Kyiv"
+
+# Optional AI observation settings. When enabled, observation runs after deterministic filters
+# and adds a non-blocking review block to the same Telegram alert.
+[ai_observation]
+enabled = false
+model = "gpt-5.4-nano-2026-03-17"
+# Directory with the single current system prompt and strict response format.
+prompt_bundle_path = "prompts"
+# Private local file; AI_POLICY_PROMPT overrides it on Railway.
+policy_prompt_path = "policy-prompt.txt"
+default_trusted_area_context = "Львівська область"
+# Upper bound for the remaining caller-supplied budget shared by attempts, sleeps and parsing.
+operation_timeout_seconds = 30
+# Total HTTP attempts including the first one; automatic OpenAI SDK retries are disabled.
+request_attempts = 2
+retry_base_seconds = 0.5
+retry_max_seconds = 2.0
+# Allowed: none, low, medium, high, xhigh.
+reasoning_effort = "none"
+max_output_tokens = 800
+# Keep false so Responses API does not retain responses for later retrieval.
+store_responses = false
 
 # Notify about every post in a public channel.
 [[sources]]
@@ -22,6 +44,8 @@ peer = "@example_discussion"
 keywords = ["хмари", "дощ", "злива"]
 keywords_to_skip = ["http", "@"]
 label = "Example discussion"
+# Overrides ai_observation.default_trusted_area_context for this source.
+trusted_area_context = "Львів та околиці"
 
 # Private groups and channels have no username. Use the ID from `list-chats`:
 # [[sources]]

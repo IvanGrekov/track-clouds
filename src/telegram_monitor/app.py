@@ -4,6 +4,7 @@ import logging
 
 from telethon import TelegramClient
 
+from .ai_observer import AIObserver, build_ai_observer
 from .client import create_client
 from .credentials import TelegramCredentials
 from .models import ConfigurationError, MonitorConfig
@@ -38,13 +39,19 @@ async def run_monitor(config: MonitorConfig) -> None:
     config.validate_for_run()
     credentials = TelegramCredentials.from_environment()
     client = create_client(credentials)
-    monitor = TelegramMonitor(
-        client=client,
-        config=config,
-        notifier=build_notifier(client, config),
-    )
+    notifier: Notifier | None = None
+    ai_observer: AIObserver | None = None
+    monitor: TelegramMonitor | None = None
 
     try:
+        notifier = build_notifier(client, config)
+        ai_observer = build_ai_observer(config.ai_observation)
+        monitor = TelegramMonitor(
+            client=client,
+            config=config,
+            notifier=notifier,
+            ai_observer=ai_observer,
+        )
         monitor.start_capture()
         await connect_authorized(client)
         await monitor.prepare()
@@ -54,6 +61,20 @@ async def run_monitor(config: MonitorConfig) -> None:
         await client.run_until_disconnected()
     finally:
         try:
-            await monitor.close()
+            if monitor is not None:
+                # TelegramMonitor owns both the notifier and the optional observer
+                # once construction succeeds. Its close order stops the worker before
+                # closing either network client.
+                await monitor.close()
+            else:
+                # Construction can fail after one or both resources are built. Close
+                # unowned resources here without allowing one close failure to leak the
+                # other resource.
+                try:
+                    if notifier is not None:
+                        await notifier.close()
+                finally:
+                    if ai_observer is not None:
+                        await ai_observer.close()
         finally:
             await client.disconnect()

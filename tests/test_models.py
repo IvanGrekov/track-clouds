@@ -1,6 +1,84 @@
+import math
+
 import pytest
 
-from telegram_monitor.models import ConfigurationError, MonitorConfig, SourceRule
+from telegram_monitor.models import (
+    AIObservationConfig,
+    ConfigurationError,
+    MonitorConfig,
+    SourceRule,
+)
+
+
+def test_ai_observation_defaults_to_disabled() -> None:
+    config = AIObservationConfig()
+
+    assert config.enabled is False
+    assert str(config.prompt_bundle_path) == "prompts"
+    assert str(config.policy_prompt_path) == "policy-prompt.txt"
+    assert config.operation_timeout_seconds == 30.0
+
+
+def test_ai_observation_normalizes_strings_paths_and_numbers() -> None:
+    config = AIObservationConfig(
+        model="  test-model  ",
+        prompt_bundle_path="  prompts  ",
+        policy_prompt_path="  private/policy-prompt.txt  ",
+        default_trusted_area_context="  Львів  ",
+        operation_timeout_seconds=20,
+        retry_base_seconds=1,
+        retry_max_seconds=3,
+    )
+
+    assert config.model == "test-model"
+    assert str(config.prompt_bundle_path) == "prompts"
+    assert str(config.policy_prompt_path) == "private/policy-prompt.txt"
+    assert config.default_trusted_area_context == "Львів"
+    assert config.operation_timeout_seconds == 20.0
+    assert config.retry_base_seconds == 1.0
+    assert config.retry_max_seconds == 3.0
+
+
+@pytest.mark.parametrize(
+    ("values", "message"),
+    [
+        ({"enabled": 1}, "enabled"),
+        ({"model": "  "}, "model"),
+        ({"prompt_bundle_path": "  "}, "prompt_bundle_path"),
+        ({"policy_prompt_path": "  "}, "policy_prompt_path"),
+        ({"policy_prompt_path": 42}, "policy_prompt_path"),
+        ({"default_trusted_area_context": 1}, "default_trusted_area_context"),
+        ({"operation_timeout_seconds": 0}, "operation_timeout_seconds"),
+        ({"operation_timeout_seconds": 30.1}, "operation_timeout_seconds"),
+        ({"operation_timeout_seconds": math.nan}, "operation_timeout_seconds"),
+        ({"operation_timeout_seconds": math.inf}, "operation_timeout_seconds"),
+        ({"request_attempts": True}, "request_attempts"),
+        ({"request_attempts": 0}, "request_attempts"),
+        ({"request_attempts": 4}, "request_attempts"),
+        ({"retry_base_seconds": -0.1}, "retry_base_seconds"),
+        ({"retry_max_seconds": math.inf}, "retry_max_seconds"),
+        (
+            {"retry_base_seconds": 2, "retry_max_seconds": 1},
+            "retry_max_seconds",
+        ),
+        (
+            {"operation_timeout_seconds": 1, "retry_max_seconds": 2},
+            "operation_timeout_seconds",
+        ),
+        ({"reasoning_effort": "max"}, "reasoning_effort"),
+        ({"reasoning_effort": "extreme"}, "reasoning_effort"),
+        ({"max_output_tokens": True}, "max_output_tokens"),
+        ({"max_output_tokens": 127}, "max_output_tokens"),
+        ({"max_output_tokens": 2_049}, "max_output_tokens"),
+        ({"store_responses": 1}, "store_responses"),
+    ],
+)
+def test_ai_observation_rejects_invalid_values(
+    values: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ConfigurationError, match=message):
+        AIObservationConfig(**values)  # type: ignore[arg-type]
 
 
 def test_filtered_source_requires_a_keyword() -> None:
@@ -51,10 +129,41 @@ def test_source_rejects_non_boolean_notify_all() -> None:
 
 
 def test_source_cleans_keywords_and_label() -> None:
-    source = SourceRule(peer=-1001234567890, keywords=("  aws ", "", "  "), label=" Work ")
+    source = SourceRule(
+        peer=-1001234567890,
+        keywords=("  aws ", "", "  "),
+        label=" Work ",
+        trusted_area_context="  Львівська область  ",
+    )
 
     assert source.keywords == ("aws",)
     assert source.label == "Work"
+    assert source.trusted_area_context == "Львівська область"
+
+
+def test_source_rejects_non_string_trusted_area_context() -> None:
+    with pytest.raises(ConfigurationError, match="trusted_area_context"):
+        SourceRule(
+            peer="@chat",
+            keywords=("aws",),
+            trusted_area_context=1,  # type: ignore[arg-type]
+        )
+
+
+def test_source_trusted_area_context_overrides_ai_default() -> None:
+    default_only = SourceRule(peer="@default", notify_all=True)
+    overridden = SourceRule(
+        peer="@override",
+        notify_all=True,
+        trusted_area_context="Львівська область",
+    )
+    config = MonitorConfig(
+        sources=(default_only, overridden),
+        ai_observation=AIObservationConfig(default_trusted_area_context="Львів"),
+    )
+
+    assert config.trusted_area_context_for(default_only) == "Львів"
+    assert config.trusted_area_context_for(overridden) == "Львівська область"
 
 
 @pytest.mark.parametrize("keyword", [1, None, object()])

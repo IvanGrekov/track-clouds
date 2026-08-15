@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import unicodedata
 from collections import deque
 from contextlib import suppress
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from telethon import events, utils
 
+from .ai_models import AIObservationTechnicalStatus
+from .ai_observer import AIObservationReport, AIObserver
 from .deduplication import MessageKey, RecentMessageCache
 from .formatting import render_notification
 from .models import MessageSnapshot, MonitorConfig
@@ -17,19 +21,35 @@ from .notifier import NotificationError, Notifier
 from .registry import SourceRegistry
 
 LOGGER = logging.getLogger(__name__)
+_SHUTDOWN_DELIVERY_GRACE_SECONDS = 5.0
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingNotification:
+    key: MessageKey
+    snapshot: MessageSnapshot = field(repr=False)
+    telegram_message: object = field(repr=False)
+    trusted_area_context: str | None = field(default=None, repr=False)
 
 
 class TelegramMonitor:
     """Resolve configured dialogs, consume NewMessage events, and emit alerts."""
 
-    def __init__(self, client: object, config: MonitorConfig, notifier: Notifier) -> None:
+    def __init__(
+        self,
+        client: object,
+        config: MonitorConfig,
+        notifier: Notifier,
+        ai_observer: AIObserver | None = None,
+    ) -> None:
         self._client = client
         self._config = config
         self._notifier = notifier
+        self._ai_observer = ai_observer
         self._registry: SourceRegistry | None = None
         self._deduplicator = RecentMessageCache(config.deduplication_window)
         self._message_log_deduplicator = RecentMessageCache(config.deduplication_window)
-        self._queue: asyncio.Queue[tuple[MessageKey, str]] = asyncio.Queue(
+        self._queue: asyncio.Queue[_PendingNotification] = asyncio.Queue(
             maxsize=config.queue_capacity
         )
         self._startup_buffer: deque[object] = deque()
@@ -98,15 +118,25 @@ class TelegramMonitor:
         self._startup_buffer.clear()
 
         if self._worker is not None:
+            flush_timeout = (
+                self._config.ai_observation.operation_timeout_seconds
+                + _SHUTDOWN_DELIVERY_GRACE_SECONDS
+                if self._ai_observer is not None
+                else _SHUTDOWN_DELIVERY_GRACE_SECONDS
+            )
             try:
-                await asyncio.wait_for(self._queue.join(), timeout=5)
+                await asyncio.wait_for(self._queue.join(), timeout=flush_timeout)
             except TimeoutError:
                 LOGGER.warning("Timed out while flushing pending notifications")
             self._worker.cancel()
             with suppress(asyncio.CancelledError):
                 await self._worker
             self._worker = None
-        await self._notifier.close()
+        try:
+            await self._notifier.close()
+        finally:
+            if self._ai_observer is not None:
+                await self._ai_observer.close()
 
     async def handle_event(self, event: object) -> None:
         """Filter and enqueue without network awaits, keeping memory bounded."""
@@ -172,13 +202,14 @@ class TelegramMonitor:
                 username=source.username,
                 has_media=bool(getattr(event_message, "media", None)),
             )
-            notification = render_notification(
-                snapshot,
-                timezone_name=self._config.timezone,
-                max_preview_chars=self._config.max_preview_chars,
+            pending = _PendingNotification(
+                key=key,
+                snapshot=snapshot,
+                telegram_message=event_message,
+                trusted_area_context=self._config.trusted_area_context_for(source.rule),
             )
             try:
-                self._queue.put_nowait((key, notification))
+                self._queue.put_nowait(pending)
             except asyncio.QueueFull:
                 self._deduplicator.release(key)
                 self._dropped_notifications += 1
@@ -234,19 +265,109 @@ class TelegramMonitor:
 
     async def _notification_worker(self) -> None:
         while True:
-            key, notification = await self._queue.get()
+            pending = await self._queue.get()
+            key = pending.key
+            alert_prepared = False
             try:
-                delivered = await self._deliver_with_retries(key, notification)
+                ai_observation = await self._observe(pending)
+                notification = render_notification(
+                    pending.snapshot,
+                    timezone_name=self._config.timezone,
+                    max_preview_chars=self._config.max_preview_chars,
+                    ai_observation=ai_observation,
+                )
+                # The completed observation and rendered alert are one logical unit.
+                # Telegram transport retries must never cause another AI request.
+                self._deduplicator.commit(key)
+                alert_prepared = True
+                await self._deliver_with_retries(key, notification)
             except asyncio.CancelledError:
-                self._deduplicator.release(key)
-                raise
-            else:
-                if delivered:
-                    self._deduplicator.commit(key)
-                else:
+                if not alert_prepared:
                     self._deduplicator.release(key)
+                raise
+            except Exception:
+                if not alert_prepared:
+                    self._deduplicator.release(key)
+                LOGGER.exception("Could not prepare notification for Telegram message %s/%s", *key)
             finally:
                 self._queue.task_done()
+
+    async def _observe(self, pending: _PendingNotification) -> AIObservationReport | None:
+        observer = self._ai_observer
+        if observer is None:
+            return None
+
+        started = time.monotonic()
+        try:
+            report = await observer.observe(
+                pending.snapshot,
+                telegram_message=pending.telegram_message,
+                trusted_area_context=pending.trusted_area_context,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            report = AIObservationReport(
+                result=None,
+                status=AIObservationTechnicalStatus.API_ERROR,
+                model=self._config.ai_observation.model,
+                prompt_hash=None,
+                elapsed_seconds=max(0.0, round(time.monotonic() - started, 3)),
+                api_latency_seconds=None,
+                attempts=0,
+                token_usage=None,
+            )
+
+        self._log_ai_observation(pending.key, report)
+        return report
+
+    @staticmethod
+    def _log_ai_observation(key: MessageKey, report: AIObservationReport) -> None:
+        model = _safe_log_text(report.model, max_chars=128)
+        if report.status is not None:
+            LOGGER.error(
+                "AI observation failed (status=%s, model=%s, "
+                "message=%s/%s, elapsed_seconds=%.3f, attempts=%d)",
+                report.status.value,
+                model,
+                *key,
+                report.elapsed_seconds,
+                report.attempts,
+            )
+            return
+
+        result = report.result
+        if result is None:  # pragma: no cover - guarded by AIObservationReport validation.
+            return
+        token_usage = report.token_usage
+        if token_usage is not None:
+            LOGGER.info(
+                "AI observation completed (decision=%s, confidence=%.2f, reason_code=%s, "
+                "model=%s, message=%s/%s, elapsed_seconds=%.3f, attempts=%d, "
+                "input_tokens=%d, output_tokens=%d, total_tokens=%d)",
+                result.decision.value,
+                result.confidence,
+                result.reason_code.value,
+                model,
+                *key,
+                report.elapsed_seconds,
+                report.attempts,
+                token_usage.input_tokens,
+                token_usage.output_tokens,
+                token_usage.total_tokens,
+            )
+            return
+        LOGGER.info(
+            "AI observation completed (decision=%s, confidence=%.2f, reason_code=%s, "
+            "model=%s, message=%s/%s, elapsed_seconds=%.3f, attempts=%d)",
+            result.decision.value,
+            result.confidence,
+            result.reason_code.value,
+            model,
+            *key,
+            report.elapsed_seconds,
+            report.attempts,
+        )
 
     async def _deliver_with_retries(self, key: MessageKey, notification: str) -> bool:
         for attempt in range(1, self._config.delivery_attempts + 1):

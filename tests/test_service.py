@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -7,8 +8,18 @@ from types import SimpleNamespace
 import pytest
 from telethon.types import PeerChannel, User
 
-from telegram_monitor.models import MonitorConfig, SourceRule
+import telegram_monitor.service as service_module
+from telegram_monitor.ai_models import (
+    AIDecision,
+    AIObservationResult,
+    AIObservationTechnicalStatus,
+    AIReasonCode,
+    AITemporalRelevance,
+)
+from telegram_monitor.ai_observer import AIObservationReport
+from telegram_monitor.models import AIObservationConfig, MessageSnapshot, MonitorConfig, SourceRule
 from telegram_monitor.notifier import NotificationError
+from telegram_monitor.openai_client import AIObservationTokenUsage
 from telegram_monitor.service import TelegramMonitor
 
 
@@ -36,6 +47,7 @@ class FakeNotifier:
     def __init__(self, failures: int = 0) -> None:
         self.failures = failures
         self.calls = 0
+        self.attempted: list[str] = []
         self.sent: list[str] = []
         self.started = False
         self.closed = False
@@ -45,10 +57,34 @@ class FakeNotifier:
 
     async def send(self, text: str) -> None:
         self.calls += 1
+        self.attempted.append(text)
         if self.failures:
             self.failures -= 1
             raise RuntimeError("temporary delivery failure")
         self.sent.append(text)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class FakeObserver:
+    def __init__(self, outcomes: list[AIObservationReport | Exception]) -> None:
+        self._outcomes = outcomes
+        self.calls: list[tuple[MessageSnapshot, object, str | None]] = []
+        self.closed = False
+
+    async def observe(
+        self,
+        snapshot: MessageSnapshot,
+        *,
+        telegram_message: object,
+        trusted_area_context: str | None,
+    ) -> AIObservationReport:
+        self.calls.append((snapshot, telegram_message, trusted_area_context))
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
 
     async def close(self) -> None:
         self.closed = True
@@ -100,6 +136,53 @@ def _config() -> MonitorConfig:
             SourceRule(peer="@announcements", notify_all=True),
         ),
         timezone="UTC",
+    )
+
+
+def _success_report(*, token_usage: AIObservationTokenUsage | None = None) -> AIObservationReport:
+    return AIObservationReport(
+        result=AIObservationResult(
+            decision=AIDecision.ACCEPT,
+            confidence=0.96,
+            location="Городоцька, біля цирку",
+            event="перекрита права смуга",
+            temporal_relevance=AITemporalRelevance.CURRENT,
+            reason_code=AIReasonCode.MEETS_ALL_CRITERIA,
+            reason="Є актуальне обмеження руху та достатньо конкретна локація.",
+        ),
+        status=None,
+        model="gpt-5.4-nano-2026-03-17",
+        prompt_hash="abc123",
+        elapsed_seconds=0.842,
+        api_latency_seconds=0.7,
+        attempts=1,
+        token_usage=token_usage,
+    )
+
+
+def _semantic_report(result: AIObservationResult) -> AIObservationReport:
+    return AIObservationReport(
+        result=result,
+        status=None,
+        model="gpt-5.4-nano-2026-03-17",
+        prompt_hash="abc123",
+        elapsed_seconds=0.842,
+        api_latency_seconds=0.7,
+        attempts=1,
+        token_usage=None,
+    )
+
+
+def _failure_report(status: AIObservationTechnicalStatus) -> AIObservationReport:
+    return AIObservationReport(
+        result=None,
+        status=status,
+        model="gpt-5.4-nano-2026-03-17",
+        prompt_hash="abc123",
+        elapsed_seconds=30.0,
+        api_latency_seconds=None,
+        attempts=1,
+        token_usage=None,
     )
 
 
@@ -385,3 +468,344 @@ async def test_bot_mode_filters_and_delivers_own_outgoing_message_once() -> None
     assert len(notifier.sent) == 1
     assert "my own k8s post" in notifier.sent[0]
     await monitor.close()
+
+
+@pytest.mark.asyncio
+async def test_observes_once_and_reuses_rendered_alert_for_delivery_retry() -> None:
+    discussion_id = -1001111111111
+    client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])
+    config = MonitorConfig(
+        sources=(
+            SourceRule(
+                peer="@discussion",
+                keywords=("k8s",),
+                trusted_area_context="Львів",
+            ),
+        ),
+        timezone="UTC",
+        delivery_attempts=2,
+        delivery_retry_base_seconds=0,
+        delivery_retry_max_seconds=0,
+        ai_observation=AIObservationConfig(enabled=True),
+    )
+    notifier = FakeNotifier(failures=1)
+    observer = FakeObserver([_success_report()])
+    monitor = TelegramMonitor(client, config, notifier, ai_observer=observer)
+    await monitor.prepare()
+
+    event = FakeEvent(discussion_id, 50, "k8s перекрита права смуга")
+    await monitor.handle_event(event)
+    await monitor.handle_event(event)
+    await monitor._queue.join()
+
+    assert len(observer.calls) == 1
+    assert observer.calls[0][1] is event.message
+    assert observer.calls[0][2] == "Львів"
+    assert notifier.calls == 2
+    assert notifier.attempted == [notifier.sent[0], notifier.sent[0]]
+    assert len(notifier.sent) == 1
+    assert "AI review:" in notifier.sent[0]
+    assert "Decision: accept" in notifier.sent[0]
+    assert "Model:" not in notifier.sent[0]
+    assert "Policy:" not in notifier.sent[0]
+    assert "Tokens:" not in notifier.sent[0]
+
+    await monitor.close()
+    assert observer.closed is True
+
+
+@pytest.mark.asyncio
+async def test_failed_delivery_does_not_allow_duplicate_to_repeat_observation() -> None:
+    discussion_id = -1001111111111
+    client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])
+    config = MonitorConfig(
+        sources=(SourceRule(peer="@discussion", keywords=("k8s",)),),
+        timezone="UTC",
+        delivery_attempts=1,
+        ai_observation=AIObservationConfig(enabled=True),
+    )
+
+    class AlwaysFailingNotifier(FakeNotifier):
+        async def send(self, text: str) -> None:
+            self.calls += 1
+            raise NotificationError("bot blocked", retryable=False)
+
+    notifier = AlwaysFailingNotifier()
+    observer = FakeObserver([_success_report()])
+    monitor = TelegramMonitor(client, config, notifier, ai_observer=observer)
+    await monitor.prepare()
+    event = FakeEvent(discussion_id, 51, "k8s перекрита права смуга")
+
+    await monitor.handle_event(event)
+    await monitor._queue.join()
+    await monitor.handle_event(event)
+    await monitor._queue.join()
+
+    assert len(observer.calls) == 1
+    assert notifier.calls == 1
+    await monitor.close()
+
+
+@pytest.mark.asyncio
+async def test_technical_observation_is_delivered_and_next_message_is_processed() -> None:
+    discussion_id = -1001111111111
+    client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])
+    config = MonitorConfig(
+        sources=(SourceRule(peer="@discussion", keywords=("k8s",)),),
+        timezone="UTC",
+        ai_observation=AIObservationConfig(enabled=True),
+    )
+    notifier = FakeNotifier()
+    observer = FakeObserver(
+        [
+            _failure_report(AIObservationTechnicalStatus.TIMEOUT),
+            _success_report(),
+        ]
+    )
+    monitor = TelegramMonitor(client, config, notifier, ai_observer=observer)
+    await monitor.prepare()
+
+    await monitor.handle_event(FakeEvent(discussion_id, 52, "k8s first message"))
+    await monitor.handle_event(FakeEvent(discussion_id, 53, "k8s second message"))
+    await monitor._queue.join()
+
+    assert len(observer.calls) == 2
+    assert len(notifier.sent) == 2
+    assert "Status: timeout" in notifier.sent[0]
+    assert "Description:" in notifier.sent[0]
+    assert "Decision:" not in notifier.sent[0]
+    assert "Decision: accept" in notifier.sent[1]
+    await monitor.close()
+
+
+@pytest.mark.asyncio
+async def test_reject_and_review_observations_do_not_change_delivery() -> None:
+    discussion_id = -1001111111111
+    client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])
+    config = MonitorConfig(
+        sources=(SourceRule(peer="@discussion", keywords=("k8s",)),),
+        timezone="UTC",
+        ai_observation=AIObservationConfig(enabled=True),
+    )
+    reject = AIObservationResult(
+        decision=AIDecision.REJECT,
+        confidence=0.94,
+        location=None,
+        event="особиста думка",
+        temporal_relevance=AITemporalRelevance.CURRENT,
+        reason_code=AIReasonCode.ONLY_OPINION_OR_EMOTION,
+        reason="Немає корисного фактичного повідомлення про маршрут.",
+    )
+    review = AIObservationResult(
+        decision=AIDecision.REVIEW,
+        confidence=0.58,
+        location="Стрийська",
+        event="можлива перешкода",
+        temporal_relevance=AITemporalRelevance.UNCLEAR,
+        reason_code=AIReasonCode.AMBIGUOUS_RECENCY,
+        reason="Часова актуальність повідомлення неоднозначна.",
+    )
+    notifier = FakeNotifier()
+    observer = FakeObserver([_semantic_report(reject), _semantic_report(review)])
+    monitor = TelegramMonitor(client, config, notifier, ai_observer=observer)
+    await monitor.prepare()
+
+    await monitor.handle_event(FakeEvent(discussion_id, 56, "k8s перше повідомлення"))
+    await monitor.handle_event(FakeEvent(discussion_id, 57, "k8s друге повідомлення"))
+    await monitor._queue.join()
+
+    assert len(observer.calls) == 2
+    assert len(notifier.sent) == 2
+    assert "Decision: reject" in notifier.sent[0]
+    assert "Decision: review" in notifier.sent[1]
+    await monitor.close()
+
+
+@pytest.mark.asyncio
+async def test_unexpected_observer_error_becomes_safe_api_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    discussion_id = -1001111111111
+    client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])
+    config = MonitorConfig(
+        sources=(SourceRule(peer="@discussion", keywords=("k8s",)),),
+        timezone="UTC",
+        ai_observation=AIObservationConfig(enabled=True),
+    )
+    notifier = FakeNotifier()
+    secret_marker = "raw-sdk-secret-marker"
+    observer = FakeObserver([RuntimeError(secret_marker)])
+    monitor = TelegramMonitor(client, config, notifier, ai_observer=observer)
+    caplog.set_level(logging.ERROR, logger="telegram_monitor.service")
+    await monitor.prepare()
+
+    await monitor.handle_event(FakeEvent(discussion_id, 54, "k8s message"))
+    await monitor._queue.join()
+
+    assert len(notifier.sent) == 1
+    assert "Status: api_error" in notifier.sent[0]
+    assert secret_marker not in notifier.sent[0]
+    assert secret_marker not in caplog.text
+    assert "AI observation failed" in caplog.text
+    await monitor.close()
+
+
+@pytest.mark.asyncio
+async def test_success_log_preserves_token_usage_without_adding_it_to_alert(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    discussion_id = -1001111111111
+    client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])
+    config = MonitorConfig(
+        sources=(SourceRule(peer="@discussion", keywords=("k8s",)),),
+        timezone="UTC",
+        ai_observation=AIObservationConfig(enabled=True),
+    )
+    notifier = FakeNotifier()
+    observer = FakeObserver([_success_report(token_usage=AIObservationTokenUsage(321, 45, 366))])
+    monitor = TelegramMonitor(client, config, notifier, ai_observer=observer)
+    caplog.set_level(logging.INFO, logger="telegram_monitor.service")
+    await monitor.prepare()
+
+    await monitor.handle_event(FakeEvent(discussion_id, 55, "k8s message with usage"))
+    await monitor._queue.join()
+
+    assert "input_tokens=321, output_tokens=45, total_tokens=366" in caplog.text
+    assert "elapsed_seconds=0.842" in caplog.text
+    assert "Tokens:" not in notifier.sent[0]
+    await monitor.close()
+
+
+@pytest.mark.asyncio
+async def test_observer_runs_only_after_all_deterministic_checks() -> None:
+    discussion_id = -1001111111111
+    channel_id = -1002222222222
+    client = FakeClient(
+        [
+            _dialog(discussion_id, "discussion", "Discussion"),
+            _dialog(channel_id, "announcements", "Announcements"),
+        ]
+    )
+    config = MonitorConfig(
+        sources=(
+            SourceRule(
+                peer="@discussion",
+                keywords=("k8s",),
+                keywords_to_skip=("spam",),
+            ),
+            SourceRule(peer="@announcements", keywords=("k8s",)),
+        ),
+        timezone="UTC",
+        ai_observation=AIObservationConfig(enabled=True),
+    )
+    notifier = FakeNotifier()
+    observer = FakeObserver([_success_report()])
+    monitor = TelegramMonitor(client, config, notifier, ai_observer=observer)
+    await monitor.prepare()
+
+    await monitor.handle_event(FakeEvent(-1009999999999, 1, "k8s unknown source"))
+    await monitor.handle_event(FakeEvent(discussion_id, 2, "k8s"))
+    await monitor.handle_event(FakeEvent(discussion_id, 3, "k8s enough text?"))
+    await monitor.handle_event(FakeEvent(discussion_id, 4, "k8s spam advertisement"))
+    await monitor.handle_event(
+        FakeEvent(
+            discussion_id,
+            5,
+            "k8s automatic forward",
+            forwarded_from_channel_id=2_222_222_222,
+            sender_id=channel_id,
+        )
+    )
+    valid_event = FakeEvent(discussion_id, 6, "k8s valid road update")
+    await monitor.handle_event(valid_event)
+    await monitor.handle_event(valid_event)
+    await monitor._queue.join()
+
+    assert len(observer.calls) == 1
+    assert len(notifier.sent) == 1
+    assert "k8s valid road update" in notifier.sent[0]
+    await monitor.close()
+
+
+@pytest.mark.asyncio
+async def test_queue_overflow_does_not_start_observation_for_dropped_job() -> None:
+    discussion_id = -1001111111111
+    client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])
+    config = MonitorConfig(
+        sources=(SourceRule(peer="@discussion", keywords=("k8s",)),),
+        timezone="UTC",
+        queue_capacity=1,
+        ai_observation=AIObservationConfig(enabled=True),
+    )
+    notifier = FakeNotifier()
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    class BlockingObserver:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+
+        async def observe(
+            self,
+            snapshot: MessageSnapshot,
+            *,
+            telegram_message: object,
+            trusted_area_context: str | None,
+        ) -> AIObservationReport:
+            del telegram_message, trusted_area_context
+            self.calls.append(snapshot.message_id)
+            if len(self.calls) == 1:
+                first_started.set()
+                await release_first.wait()
+            return _success_report()
+
+        async def close(self) -> None:
+            return None
+
+    observer = BlockingObserver()
+    monitor = TelegramMonitor(client, config, notifier, ai_observer=observer)
+    await monitor.prepare()
+
+    await monitor.handle_event(FakeEvent(discussion_id, 61, "k8s first queued update"))
+    await first_started.wait()
+    await monitor.handle_event(FakeEvent(discussion_id, 62, "k8s second queued update"))
+    await monitor.handle_event(FakeEvent(discussion_id, 63, "k8s dropped queued update"))
+    release_first.set()
+    await monitor._queue.join()
+
+    assert observer.calls == [61, 62]
+    assert monitor.dropped_notifications == 1
+    assert len(notifier.sent) == 2
+    await monitor.close()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_wait_exceeds_one_complete_ai_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    discussion_id = -1001111111111
+    client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])
+    config = MonitorConfig(
+        sources=(SourceRule(peer="@discussion", keywords=("k8s",)),),
+        timezone="UTC",
+        ai_observation=AIObservationConfig(enabled=True, operation_timeout_seconds=6),
+    )
+    notifier = FakeNotifier()
+    observer = FakeObserver([_failure_report(AIObservationTechnicalStatus.TIMEOUT)])
+    monitor = TelegramMonitor(client, config, notifier, ai_observer=observer)
+    await monitor.prepare()
+    await monitor.handle_event(FakeEvent(discussion_id, 64, "k8s pending timeout"))
+
+    observed_timeouts: list[float | None] = []
+    real_wait_for = asyncio.wait_for
+
+    async def capture_wait_for(awaitable: object, timeout: float | None) -> object:
+        observed_timeouts.append(timeout)
+        return await real_wait_for(awaitable, timeout=timeout)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(service_module.asyncio, "wait_for", capture_wait_for)
+    await monitor.close()
+
+    assert observed_timeouts == [11.0]
+    assert len(notifier.sent) == 1
+    assert "Status: timeout" in notifier.sent[0]
