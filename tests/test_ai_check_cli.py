@@ -246,8 +246,6 @@ def test_main_accepts_stdin_and_notify_all_without_constructing_telegram(
             "--live",
             "--stdin",
             "--notify-all",
-            "--reply-context",
-            "earlier context",
             "--message-age-seconds",
             "8",
         ]
@@ -260,7 +258,6 @@ def test_main_accepts_stdin_and_notify_all_without_constructing_telegram(
         "matched_keywords": (),
         "notify_all": True,
         "trusted_area_context": None,
-        "reply_context": "earlier context",
         "message_age_seconds": 8,
     }
 
@@ -360,7 +357,6 @@ async def test_run_ai_check_maps_request_and_uses_disabled_config_for_one_live_c
         matched_keywords=("перекри", "дорог"),
         notify_all=False,
         trusted_area_context=None,
-        reply_context="Попереднє повідомлення",
         message_age_seconds=8,
         client_factory=factory,
         now=lambda: now,
@@ -379,7 +375,6 @@ async def test_run_ai_check_maps_request_and_uses_disabled_config_for_one_live_c
     assert request.trusted_area_context == "Львів"
     assert request.matched_keywords == ("перекри", "дорог")
     assert request.notify_all is False
-    assert request.reply_context == "Попереднє повідомлення"
     assert timeout_seconds == 17
     assert client.close_calls == 1
     payload = _payload(capsys)
@@ -399,7 +394,6 @@ async def test_explicit_area_context_overrides_configured_fallback(
         matched_keywords=("перекри",),
         notify_all=False,
         trusted_area_context="Київ",
-        reply_context=None,
         message_age_seconds=0,
         client_factory=lambda config: client,  # type: ignore[arg-type,return-value]
         now=lambda: datetime(2026, 8, 15, tzinfo=UTC),
@@ -424,7 +418,6 @@ async def test_semantic_decisions_are_successful_json_results(
         matched_keywords=("маршрут",),
         notify_all=False,
         trusted_area_context=None,
-        reply_context=None,
         message_age_seconds=0,
         client_factory=lambda config: client,  # type: ignore[arg-type,return-value]
     )
@@ -462,7 +455,6 @@ async def test_technical_statuses_are_exit_three_without_semantic_fields(
         matched_keywords=("маршрут",),
         notify_all=False,
         trusted_area_context=None,
-        reply_context=None,
         message_age_seconds=0,
         client_factory=lambda config: client,  # type: ignore[arg-type,return-value]
     )
@@ -497,7 +489,6 @@ async def test_unexpected_classify_error_is_safe_and_client_is_closed_once(
         matched_keywords=("маршрут",),
         notify_all=False,
         trusted_area_context=None,
-        reply_context=None,
         message_age_seconds=0,
         client_factory=lambda config: client,  # type: ignore[arg-type,return-value]
         monotonic=iter((10.0, 10.125, 10.250)).__next__,
@@ -533,7 +524,6 @@ async def test_close_error_preserves_semantic_result_and_logs_safely(
         matched_keywords=("маршрут",),
         notify_all=False,
         trusted_area_context=None,
-        reply_context=None,
         message_age_seconds=0,
         client_factory=lambda config: client,
     )
@@ -564,7 +554,6 @@ async def test_factory_configuration_error_is_propagated_without_reading_dotenv(
             matched_keywords=("маршрут",),
             notify_all=False,
             trusted_area_context=None,
-            reply_context=None,
             message_age_seconds=0,
             client_factory=failed_factory,
         )

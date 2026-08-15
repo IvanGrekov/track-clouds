@@ -70,7 +70,6 @@ class AIObservationTechnicalStatus(StrEnum):
     REFUSAL = "refusal"
     API_ERROR = "api_error"
     INVALID_RESPONSE = "invalid_response"
-    REPLY_CONTEXT_ERROR = "reply_context_error"
 
 
 class AIResponseValidationError(ValueError):

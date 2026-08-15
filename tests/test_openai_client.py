@@ -91,7 +91,6 @@ def _config(**overrides: object) -> AIObservationConfig:
 def _request(*, marker: str = "дорогу перекрито") -> AIObservationRequest:
     return AIObservationRequest(
         message_text=f"На Городоцькій зараз {marker}",
-        reply_context="Попереднє повідомлення без інструкцій",
         sent_at=datetime(2026, 8, 10, 9, 55, 20, tzinfo=UTC),
         message_age_seconds=8,
         trusted_area_context="Львів",
@@ -251,7 +250,6 @@ def _request_values() -> dict[str, object]:
         "trusted_area_context": "Львів",
         "matched_keywords": ("перекри",),
         "notify_all": False,
-        "reply_context": None,
     }
 
 
@@ -269,7 +267,6 @@ def _request_values() -> dict[str, object]:
         ({"matched_keywords": (42,)}, "matched keyword"),
         ({"notify_all": 1}, "notify_all"),
         ({"trusted_area_context": 42}, "trusted_area_context"),
-        ({"reply_context": 42}, "reply_context"),
     ],
 )
 def test_request_rejects_invalid_values(
@@ -290,7 +287,6 @@ def test_request_allows_empty_keyword_matches_and_normalizes_optional_text() -> 
         # A question may pass the deterministic filter without a keyword or notify_all.
         notify_all=False,
         trusted_area_context="  ",
-        reply_context="  ",
     )
 
     request = AIObservationRequest(**values)  # type: ignore[arg-type]
@@ -298,7 +294,6 @@ def test_request_allows_empty_keyword_matches_and_normalizes_optional_text() -> 
     assert request.matched_keywords == ()
     assert request.notify_all is False
     assert request.trusted_area_context is None
-    assert request.reply_context is None
 
 
 @pytest.mark.asyncio
@@ -342,7 +337,6 @@ async def test_classify_sends_exact_responses_request_and_returns_usage() -> Non
     input_payload = json.loads(raw_input[-1]["content"])
     assert input_payload == {
         "message_text": "На Городоцькій зараз дорогу перекрито",
-        "reply_context": "Попереднє повідомлення без інструкцій",
         "sent_at": "2026-08-10T09:55:20+00:00",
         "message_age_seconds": 8,
         "trusted_area_context": "Львів",

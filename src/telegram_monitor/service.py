@@ -28,7 +28,6 @@ _SHUTDOWN_DELIVERY_GRACE_SECONDS = 5.0
 class _PendingNotification:
     key: MessageKey
     snapshot: MessageSnapshot = field(repr=False)
-    telegram_message: object = field(repr=False)
     trusted_area_context: str | None = field(default=None, repr=False)
 
 
@@ -205,7 +204,6 @@ class TelegramMonitor:
             pending = _PendingNotification(
                 key=key,
                 snapshot=snapshot,
-                telegram_message=event_message,
                 trusted_area_context=self._config.trusted_area_context_for(source.rule),
             )
             try:
@@ -301,7 +299,6 @@ class TelegramMonitor:
         try:
             report = await observer.observe(
                 pending.snapshot,
-                telegram_message=pending.telegram_message,
                 trusted_area_context=pending.trusted_area_context,
             )
         except asyncio.CancelledError:

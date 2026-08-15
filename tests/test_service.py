@@ -70,17 +70,16 @@ class FakeNotifier:
 class FakeObserver:
     def __init__(self, outcomes: list[AIObservationReport | Exception]) -> None:
         self._outcomes = outcomes
-        self.calls: list[tuple[MessageSnapshot, object, str | None]] = []
+        self.calls: list[tuple[MessageSnapshot, str | None]] = []
         self.closed = False
 
     async def observe(
         self,
         snapshot: MessageSnapshot,
         *,
-        telegram_message: object,
         trusted_area_context: str | None,
     ) -> AIObservationReport:
-        self.calls.append((snapshot, telegram_message, trusted_area_context))
+        self.calls.append((snapshot, trusted_area_context))
         outcome = self._outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
@@ -499,12 +498,12 @@ async def test_observes_once_and_reuses_rendered_alert_for_delivery_retry() -> N
     await monitor._queue.join()
 
     assert len(observer.calls) == 1
-    assert observer.calls[0][1] is event.message
-    assert observer.calls[0][2] == "Львів"
+    assert observer.calls[0][1] == "Львів"
     assert notifier.calls == 2
     assert notifier.attempted == [notifier.sent[0], notifier.sent[0]]
     assert len(notifier.sent) == 1
     assert "AI review:" in notifier.sent[0]
+    assert "Source: Discussion\nTime:" in notifier.sent[0]
     assert "Decision: accept" in notifier.sent[0]
     assert "Model:" not in notifier.sent[0]
     assert "Policy:" not in notifier.sent[0]
@@ -749,10 +748,9 @@ async def test_queue_overflow_does_not_start_observation_for_dropped_job() -> No
             self,
             snapshot: MessageSnapshot,
             *,
-            telegram_message: object,
             trusted_area_context: str | None,
         ) -> AIObservationReport:
-            del telegram_message, trusted_area_context
+            del trusted_area_context
             self.calls.append(snapshot.message_id)
             if len(self.calls) == 1:
                 first_started.set()
