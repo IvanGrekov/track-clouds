@@ -50,7 +50,8 @@ class AIObservationReport:
     """One normalized observation result with end-to-end timing metadata.
 
     Exactly one of ``result`` and ``status`` is present. The report deliberately
-    excludes raw prompts, Telegram text, API responses, exceptions and API keys.
+    excludes raw prompts, Telegram text, exceptions and API keys. Invalid model
+    output may be retained in ``response_text`` for diagnostic logging.
     """
 
     result: AIObservationResult | None = field(repr=False)
@@ -61,6 +62,7 @@ class AIObservationReport:
     api_latency_seconds: float | None
     attempts: int
     token_usage: AIObservationTokenUsage | None
+    response_text: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if (self.result is None) == (self.status is None):
@@ -96,6 +98,13 @@ class AIObservationReport:
             or self.attempts < 0
         ):
             raise ValueError("AI observation report attempts must be non-negative")
+        if self.response_text is not None:
+            if not isinstance(self.response_text, str):
+                raise ValueError("AI observation report response_text must be a string or null")
+            if self.status is not AIObservationTechnicalStatus.INVALID_RESPONSE:
+                raise ValueError(
+                    "AI observation report response_text requires invalid_response status"
+                )
 
 
 class AIObserver(Protocol):
@@ -249,6 +258,7 @@ class OpenAIMessageObserver:
                 api_latency_seconds=outcome.api_latency_seconds,
                 attempts=outcome.attempts,
                 token_usage=None,
+                response_text=outcome.response_text,
             )
         return self._local_failure(
             AIObservationTechnicalStatus.API_ERROR,

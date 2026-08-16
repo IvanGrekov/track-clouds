@@ -425,6 +425,19 @@ async def test_classify_normalizes_non_successful_outputs(
 
 
 @pytest.mark.asyncio
+async def test_invalid_response_preserves_output_text_for_diagnostics() -> None:
+    response_text = "not valid\nJSON"
+    client, _ = _client([_sdk_response(response_text)])
+
+    outcome = await client.classify(_request(), timeout_seconds=1)
+
+    assert isinstance(outcome, AIObservationFailure)
+    assert outcome.status is AIObservationTechnicalStatus.INVALID_RESPONSE
+    assert outcome.response_text == response_text
+    assert response_text not in repr(outcome)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("error_code", ["server_error", "rate_limit_exceeded"])
 async def test_transient_failed_response_retries_then_succeeds(error_code: str) -> None:
     failed = _sdk_response(_accepted_json(), status="failed", error_code=error_code)

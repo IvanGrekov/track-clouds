@@ -134,6 +134,7 @@ class AIObservationFailure:
     api_latency_seconds: float
     attempts: int
     request_id: str | None = field(default=None, repr=False)
+    response_text: str | None = field(default=None, repr=False)
 
 
 AIObservationOutcome: TypeAlias = AIObservationSuccess | AIObservationFailure
@@ -466,7 +467,11 @@ class OpenAIObservationClient:
         attempts: int,
     ) -> AIObservationOutcome:
         request_id = _safe_request_id(_member(response, "_request_id"))
+        response_text: str | None = None
         try:
+            raw_response_text = _member(response, "output_text")
+            if isinstance(raw_response_text, str):
+                response_text = raw_response_text
             status = _member(response, "status")
             if _response_contains_refusal(response):
                 return self._failure(
@@ -487,6 +492,11 @@ class OpenAIObservationClient:
                     started=started,
                     attempts=attempts,
                     request_id=request_id,
+                    response_text=(
+                        response_text
+                        if technical_status is AIObservationTechnicalStatus.INVALID_RESPONSE
+                        else None
+                    ),
                 )
             response_error = _member(response, "error")
             if status == "failed" or response_error is not None:
@@ -507,23 +517,25 @@ class OpenAIObservationClient:
                     started=started,
                     attempts=attempts,
                     request_id=request_id,
+                    response_text=response_text,
                 )
 
-            output_text = _member(response, "output_text")
-            if not isinstance(output_text, str) or not output_text.strip():
+            if response_text is None or not response_text.strip():
                 return self._failure(
                     AIObservationTechnicalStatus.INVALID_RESPONSE,
                     started=started,
                     attempts=attempts,
                     request_id=request_id,
+                    response_text=response_text,
                 )
-            result = parse_ai_observation_response(output_text)
+            result = parse_ai_observation_response(response_text)
         except (AIResponseValidationError, TypeError, ValueError, AttributeError):
             return self._failure(
                 AIObservationTechnicalStatus.INVALID_RESPONSE,
                 started=started,
                 attempts=attempts,
                 request_id=request_id,
+                response_text=response_text,
             )
 
         return AIObservationSuccess(
@@ -584,6 +596,7 @@ class OpenAIObservationClient:
         started: float,
         attempts: int,
         request_id: str | None = None,
+        response_text: str | None = None,
     ) -> AIObservationFailure:
         return AIObservationFailure(
             status=status,
@@ -592,6 +605,7 @@ class OpenAIObservationClient:
             api_latency_seconds=self._elapsed_seconds(started),
             attempts=attempts,
             request_id=request_id,
+            response_text=response_text,
         )
 
     async def close(self) -> None:

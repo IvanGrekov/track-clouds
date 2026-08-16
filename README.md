@@ -487,6 +487,7 @@ Bot alert delivered to 3/3 subscriber(s)
 Bot alert delivery incomplete (status=partial, delivered=2, failed=1, total=3, failed_chat_ids=456)
 AI observation completed (decision=accept, reason_code=meets_all_criteria, elapsed_seconds=0.842, ...)
 AI observation failed (status=timeout, model=gpt-5.4-nano-2026-03-17, elapsed_seconds=30.000, ...)
+AI observation failed (status=invalid_response, ..., ai_response=...)
 ```
 
 Логування відбувається після всіх перевірок. Якщо повідомлення закінчується на `?`,
@@ -505,10 +506,11 @@ outgoing-повідомлення. Повторний Telegram update з тим 
 автоматичний retry не запланований. Текст alert, Bot API payload і token у delivery-логи не
 записуються.
 
-Успішний AI log містить лише decision/reason code, timing у секундах та
-безпечні metadata;
-технічний результат записується на рівні `ERROR`. Message text, location, event,
-reason, raw response, exception, prompt і API key у ці записи не додаються.
+Успішний AI log містить лише decision/reason code, timing у секундах та безпечні metadata;
+технічний результат записується на рівні `ERROR`. Для `invalid_response` запис також
+містить однорядковий, обмежений за довжиною `ai_response`; для інших результатів raw
+response не додається. Message text, location, event, reason, exception, prompt і API key у
+ці записи не додаються.
 
 ## Перевірка коду
 

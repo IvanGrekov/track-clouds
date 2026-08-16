@@ -438,6 +438,7 @@ Bot alert delivered to N/N subscriber(s)
 Bot alert delivery incomplete (status=partial|failed, delivered=N, failed=N, ...)
 AI observation completed (decision=..., reason_code=..., ...)
 AI observation failed (status=..., model=..., message=chat/message, elapsed_seconds=..., ...)
+AI observation failed (status=invalid_response, ..., ai_response=...)
 ```
 
 Retryable Bot API delivery errors записуються як `WARNING` з `chat_id`, `error_code`,
@@ -445,9 +446,11 @@ Retryable Bot API delivery errors записуються як `WARNING` з `chat
 записуються як `ERROR`; лог також попереджає, що durable retry не запланований. Alert text,
 Bot API request payload та token у ці delivery-логи не додаються.
 
-AI logs не містять message text, location, event, reason, raw response/refusal,
-exception, prompt або API key. Неочікувана observer-помилка також спочатку нормалізується до
-`api_error`, а вже потім записується без traceback чи raw exception text.
+AI logs не містять message text, location, event, reason, refusal, exception, prompt або
+API key. Для `invalid_response` error log містить однорядковий, обмежений за довжиною
+`ai_response`, щоб зберегти невалідний model output для діагностики. Неочікувана
+observer-помилка також спочатку нормалізується до `api_error`, а вже потім записується без
+traceback чи raw exception text.
 
 У Docker ці streams зазвичай збираються Docker logging driver, тому вони не є тимчасовими в
 сенсі приватності. Логи містять previews matched-повідомлень та Telegram user metadata;
