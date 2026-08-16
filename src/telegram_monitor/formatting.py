@@ -80,7 +80,6 @@ def _render_ai_observation(observation: AIObservationReport) -> str:
             (
                 "AI review:",
                 f"Decision: {result.decision.value}",
-                f"Confidence: {result.confidence:.2f}",
                 f"Location: {_sanitize_ai_text(result.location, 256)}",
                 f"Event: {_sanitize_ai_text(result.event, 512)}",
                 f"Relevance: {result.temporal_relevance.value}",

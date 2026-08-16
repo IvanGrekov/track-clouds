@@ -227,13 +227,18 @@ deduplication та automatic-forward перевірок. Уся AI-операц�
 доступ до моделі та мережі фактично перевіряються під час першого request. Setup failure
 нормалізується як fail-open `api_error`, щоб основна Telegram-доставка продовжилася.
 
-Успішний alert містить блок `AI review:` із `Decision`, `Confidence`, `Location`, `Event`,
+Успішний alert містить блок `AI review:` із `Decision`, `Location`, `Event`,
 `Relevance`, `Code reason`, `Reason` і загальним `Delay` у секундах з трьома знаками
 після крапки, наприклад `Delay: 0.842 s`. `Delay` — це повна тривалість
 observation поточного повідомлення від її початку до готового результату.
 Model і token usage у Telegram не показуються, але залишаються доступними як безпечні
 runtime metadata для application logs. Технічний блок містить лише `Status` та
 однореченнєвий `Description`.
+
+Semantic output є категоріальним: strict schema повертає `decision`, виявлені
+location/event, temporal relevance, `reason_code` і короткий `reason`. Цей самий набір
+семантичних полів використовують Telegram alert і manual CLI; application log залишає лише
+`decision`, `reason_code` та безпечні metadata.
 
 ### Ручний AI smoke test
 
@@ -300,7 +305,6 @@ subscriber store, не надсилає Telegram alert і не змінює pers
 {
   "kind": "semantic",
   "decision": "accept",
-  "confidence": 0.96,
   "location": "Липники, ліс у напрямку Львова",
   "event": "хмарно; згадані зелені",
   "temporal_relevance": "current",
@@ -481,7 +485,7 @@ Removed user (chat_id=123, user_id=123, username=@example, first_name=Name, reas
 Bot alert broadcast started (total=3)
 Bot alert delivered to 3/3 subscriber(s)
 Bot alert delivery incomplete (status=partial, delivered=2, failed=1, total=3, failed_chat_ids=456)
-AI observation completed (decision=accept, confidence=0.96, reason_code=meets_all_criteria, elapsed_seconds=0.842, ...)
+AI observation completed (decision=accept, reason_code=meets_all_criteria, elapsed_seconds=0.842, ...)
 AI observation failed (status=timeout, model=gpt-5.4-nano-2026-03-17, elapsed_seconds=30.000, ...)
 ```
 
@@ -501,7 +505,7 @@ outgoing-повідомлення. Повторний Telegram update з тим 
 автоматичний retry не запланований. Текст alert, Bot API payload і token у delivery-логи не
 записуються.
 
-Успішний AI log містить лише decision/confidence/reason code, timing у секундах та
+Успішний AI log містить лише decision/reason code, timing у секундах та
 безпечні metadata;
 технічний результат записується на рівні `ERROR`. Message text, location, event,
 reason, raw response, exception, prompt і API key у ці записи не додаються.

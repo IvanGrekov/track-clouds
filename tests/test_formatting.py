@@ -44,7 +44,6 @@ def _success_observation(
 ) -> SimpleNamespace:
     result = AIObservationResult(
         decision=AIDecision.ACCEPT,
-        confidence=0.96,
         location=location,
         event=event,
         temporal_relevance=AITemporalRelevance.CURRENT,
@@ -128,7 +127,6 @@ def test_renders_successful_ai_observation_without_experiment_metadata() -> None
 
     assert "\n\nAI review:\n" in rendered
     assert "Decision: accept" in rendered
-    assert "Confidence: 0.96" in rendered
     assert "Location: Городоцька, біля цирку" in rendered
     assert "Event: перекрита права смуга" in rendered
     assert "Relevance: current" in rendered
@@ -147,7 +145,6 @@ def test_renders_successful_ai_observation_without_experiment_metadata() -> None
         (
             AIObservationResult(
                 decision=AIDecision.REJECT,
-                confidence=0.91,
                 location=None,
                 event="особиста думка про погоду",
                 temporal_relevance=AITemporalRelevance.CURRENT,
@@ -163,7 +160,6 @@ def test_renders_successful_ai_observation_without_experiment_metadata() -> None
         (
             AIObservationResult(
                 decision=AIDecision.REVIEW,
-                confidence=0.62,
                 location="Стрийська",
                 event="можлива перешкода",
                 temporal_relevance=AITemporalRelevance.UNCLEAR,
@@ -241,7 +237,6 @@ def test_renders_safe_technical_ai_observation(
 
     assert f"AI review:\nStatus: {status.value}\nDescription: {description}" in rendered
     assert "Decision:" not in rendered
-    assert "Confidence:" not in rendered
     assert "Location:" not in rendered
     assert "Event:" not in rendered
     assert "Reason:" not in rendered

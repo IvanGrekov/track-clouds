@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -25,7 +24,6 @@ __all__ = [
 AI_REASON_MAX_LENGTH: Final = 240
 AI_RESPONSE_FIELD_ORDER: Final = (
     "decision",
-    "confidence",
     "location",
     "event",
     "temporal_relevance",
@@ -79,7 +77,6 @@ class AIResponseValidationError(ValueError):
 @dataclass(frozen=True, slots=True)
 class AIObservationResult:
     decision: AIDecision
-    confidence: float
     location: str | None
     event: str | None
     temporal_relevance: AITemporalRelevance
@@ -212,15 +209,6 @@ def parse_ai_observation_response(payload: object) -> AIObservationResult:
 
     decision = _parse_enum(payload["decision"], AIDecision, field_name="decision")
 
-    raw_confidence = payload["confidence"]
-    if isinstance(raw_confidence, bool) or not isinstance(raw_confidence, (int, float)):
-        raise AIResponseValidationError("AI response field 'confidence' must be a number")
-    confidence = float(raw_confidence)
-    if not math.isfinite(confidence) or not 0 <= confidence <= 1:
-        raise AIResponseValidationError(
-            "AI response field 'confidence' must be finite and between 0 and 1"
-        )
-
     location = _parse_nullable_text(payload["location"], field_name="location")
     event = _parse_nullable_text(payload["event"], field_name="event")
     temporal_relevance = _parse_enum(
@@ -247,7 +235,6 @@ def parse_ai_observation_response(payload: object) -> AIObservationResult:
 
     result = AIObservationResult(
         decision=decision,
-        confidence=confidence,
         location=location,
         event=event,
         temporal_relevance=temporal_relevance,

@@ -142,7 +142,6 @@ def _success_report(*, token_usage: AIObservationTokenUsage | None = None) -> AI
     return AIObservationReport(
         result=AIObservationResult(
             decision=AIDecision.ACCEPT,
-            confidence=0.96,
             location="Городоцька, біля цирку",
             event="перекрита права смуга",
             temporal_relevance=AITemporalRelevance.CURRENT,
@@ -588,7 +587,6 @@ async def test_reject_and_review_observations_do_not_change_delivery() -> None:
     )
     reject = AIObservationResult(
         decision=AIDecision.REJECT,
-        confidence=0.94,
         location=None,
         event="особиста думка",
         temporal_relevance=AITemporalRelevance.CURRENT,
@@ -597,7 +595,6 @@ async def test_reject_and_review_observations_do_not_change_delivery() -> None:
     )
     review = AIObservationResult(
         decision=AIDecision.REVIEW,
-        confidence=0.58,
         location="Стрийська",
         event="можлива перешкода",
         temporal_relevance=AITemporalRelevance.UNCLEAR,

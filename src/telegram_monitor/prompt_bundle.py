@@ -157,7 +157,6 @@ def _validate_response_format(response_format: dict[str, Any]) -> None:
             "type": "string",
             "enum": [decision.value for decision in AIDecision],
         },
-        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "location": {"type": ["string", "null"]},
         "event": {"type": ["string", "null"]},
         "temporal_relevance": {
