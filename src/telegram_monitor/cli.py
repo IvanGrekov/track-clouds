@@ -326,7 +326,6 @@ def _ai_check_payload(
             {
                 "kind": "semantic",
                 "decision": result.decision.value,
-                "confidence": result.confidence,
                 "location": result.location,
                 "event": result.event,
                 "temporal_relevance": result.temporal_relevance.value,

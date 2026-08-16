@@ -7,7 +7,6 @@
         "additionalProperties": false,
         "required": [
             "decision",
-            "confidence",
             "location",
             "event",
             "temporal_relevance",
@@ -18,11 +17,6 @@
             "decision": {
                 "type": "string",
                 "enum": ["accept", "reject", "review"]
-            },
-            "confidence": {
-                "type": "number",
-                "minimum": 0,
-                "maximum": 1
             },
             "location": {
                 "type": ["string", "null"]

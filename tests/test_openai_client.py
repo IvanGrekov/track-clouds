@@ -50,7 +50,6 @@ def _response_format() -> dict[str, object]:
             "additionalProperties": False,
             "required": [
                 "decision",
-                "confidence",
                 "location",
                 "event",
                 "temporal_relevance",
@@ -103,7 +102,6 @@ def _accepted_json() -> str:
     return json.dumps(
         {
             "decision": "accept",
-            "confidence": 0.96,
             "location": "Городоцька",
             "event": "перекрита права смуга",
             "temporal_relevance": "current",

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 
 import pytest
 
@@ -20,7 +19,6 @@ from telegram_monitor.ai_models import (
 def _accept_payload() -> dict[str, object]:
     return {
         "decision": "accept",
-        "confidence": 0.96,
         "location": "Городоцька, біля цирку",
         "event": "перекрита права смуга",
         "temporal_relevance": "current",
@@ -37,7 +35,6 @@ def test_parse_ai_observation_response_returns_typed_immutable_result() -> None:
 
     assert result == AIObservationResult(
         decision=AIDecision.ACCEPT,
-        confidence=0.96,
         location="Городоцька, біля цирку",
         event="перекрита права смуга",
         temporal_relevance=AITemporalRelevance.CURRENT,
@@ -148,7 +145,7 @@ def test_parse_ai_observation_response_accepts_json_text() -> None:
     assert result.decision is AIDecision.ACCEPT
 
 
-@pytest.mark.parametrize("payload", ["{invalid", '{"confidence":NaN}'])
+@pytest.mark.parametrize("payload", ["{invalid", '{"decision":NaN}'])
 def test_parse_ai_observation_response_rejects_invalid_json(payload: str) -> None:
     with pytest.raises(AIResponseValidationError, match="valid JSON"):
         parse_ai_observation_response(payload)
@@ -183,15 +180,6 @@ def test_parse_ai_observation_response_requires_exact_fields() -> None:
     for payload in (missing, extra):
         with pytest.raises(AIResponseValidationError, match="exactly"):
             parse_ai_observation_response(payload)
-
-
-@pytest.mark.parametrize("confidence", [True, "0.9", None, math.nan, math.inf, -0.01, 1.01])
-def test_parse_ai_observation_response_rejects_invalid_confidence(confidence: object) -> None:
-    payload = _accept_payload()
-    payload["confidence"] = confidence
-
-    with pytest.raises(AIResponseValidationError, match="confidence"):
-        parse_ai_observation_response(payload)
 
 
 @pytest.mark.parametrize(

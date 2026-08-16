@@ -59,7 +59,6 @@ def _snapshot(*, text: str = "На Городоцькій зараз перек�
 def _result() -> AIObservationResult:
     return AIObservationResult(
         decision=AIDecision.ACCEPT,
-        confidence=0.96,
         location="Городоцька",
         event="перекрита смуга",
         temporal_relevance=AITemporalRelevance.CURRENT,

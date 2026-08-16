@@ -128,10 +128,14 @@ Responses API з `type = "json_schema"`, `name = "telegram_mobility_observation"
 Семантична відповідь моделюється frozen dataclass `AIObservationResult` із полями:
 
 - `decision`: `accept`, `reject` або `review`;
-- `confidence`: число від 0 до 1;
 - `location` і `event`: нормалізовані фрагменти або `null`;
 - `temporal_relevance`: `current`, `historical` або `unclear`;
 - `reason_code` та короткий `reason`.
+
+Semantic contract є категоріальним: strict response schema і typed result фіксують
+`decision`, а location/event, temporal relevance, `reason_code` і `reason` надають
+пояснювальний контекст. Telegram formatter і manual CLI використовують цей набір, а
+application logs залишають лише `decision`, `reason_code` та безпечні metadata.
 
 Важливі semantic mappings:
 
@@ -261,7 +265,7 @@ raw API response, raw exception або окрему копію input envelope. �
     ізольованому OpenAI client-у.
 15. Семантичний або технічний observation report передається `render_notification()`, який
     створює один plain-text alert до Telegram limit 4096 символів. Успішний AI-блок містить
-    `Decision`, `Confidence`, `Location`, `Event`, `Relevance`, `Code reason`, `Reason` і
+    `Decision`, `Location`, `Event`, `Relevance`, `Code reason`, `Reason` і
     `Delay` у секундах з трьома знаками після крапки, наприклад `Delay: 0.842 s`;
     це повний `elapsed_seconds` observation. Технічний блок містить лише `Status` і
     `Description`.
@@ -432,7 +436,7 @@ Removed user (..., reason=unreachable)
 Bot alert broadcast started (total=N)
 Bot alert delivered to N/N subscriber(s)
 Bot alert delivery incomplete (status=partial|failed, delivered=N, failed=N, ...)
-AI observation completed (decision=..., confidence=..., reason_code=..., ...)
+AI observation completed (decision=..., reason_code=..., ...)
 AI observation failed (status=..., model=..., message=chat/message, elapsed_seconds=..., ...)
 ```
 

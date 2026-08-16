@@ -34,7 +34,6 @@ def _valid_response_format() -> dict[str, object]:
             "additionalProperties": False,
             "required": [
                 "decision",
-                "confidence",
                 "location",
                 "event",
                 "temporal_relevance",
@@ -46,7 +45,6 @@ def _valid_response_format() -> dict[str, object]:
                     "type": "string",
                     "enum": [value.value for value in AIDecision],
                 },
-                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                 "location": {"type": ["string", "null"]},
                 "event": {"type": ["string", "null"]},
                 "temporal_relevance": {
@@ -470,6 +468,23 @@ def test_load_prompt_bundle_rejects_schema_drift_from_typed_contract(tmp_path: P
     reason_code = properties["reason_code"]
     assert isinstance(reason_code, dict)
     reason_code["enum"] = ["unsupported_reason"]
+    _write_bundle(bundle_path, response_format=response_format)
+
+    with pytest.raises(ConfigurationError, match="typed AI response contract"):
+        load_prompt_bundle(_config(bundle_path))
+
+
+def test_load_prompt_bundle_rejects_extra_schema_property(tmp_path: Path) -> None:
+    bundle_path = tmp_path / "bundle"
+    response_format = _valid_response_format()
+    schema = response_format["schema"]
+    assert isinstance(schema, dict)
+    required = schema["required"]
+    properties = schema["properties"]
+    assert isinstance(required, list)
+    assert isinstance(properties, dict)
+    required.append("unexpected")
+    properties["unexpected"] = {"type": "string"}
     _write_bundle(bundle_path, response_format=response_format)
 
     with pytest.raises(ConfigurationError, match="typed AI response contract"):

@@ -65,7 +65,6 @@ def _result(decision: AIDecision) -> AIObservationResult:
     if decision is AIDecision.ACCEPT:
         return AIObservationResult(
             decision=decision,
-            confidence=0.96,
             location="Городоцька",
             event="перекрито рух",
             temporal_relevance=AITemporalRelevance.CURRENT,
@@ -75,7 +74,6 @@ def _result(decision: AIDecision) -> AIObservationResult:
     if decision is AIDecision.REJECT:
         return AIObservationResult(
             decision=decision,
-            confidence=0.93,
             location=None,
             event="перекрито рух",
             temporal_relevance=AITemporalRelevance.CURRENT,
@@ -84,7 +82,6 @@ def _result(decision: AIDecision) -> AIObservationResult:
         )
     return AIObservationResult(
         decision=decision,
-        confidence=0.61,
         location="Стрийська",
         event="можлива перешкода",
         temporal_relevance=AITemporalRelevance.UNCLEAR,
@@ -427,7 +424,16 @@ async def test_semantic_decisions_are_successful_json_results(
     payload = _payload(capsys)
     assert payload["kind"] == "semantic"
     assert payload["decision"] == decision.value
-    assert payload["confidence"] == _result(decision).confidence
+    assert set(payload) == {
+        "kind",
+        "decision",
+        "location",
+        "event",
+        "temporal_relevance",
+        "reason_code",
+        "reason",
+        "metadata",
+    }
     assert payload["metadata"] == {
         "model": "gpt-5.4-nano-2026-03-17",
         "prompt_hash": "a" * 64,
@@ -466,7 +472,6 @@ async def test_technical_statuses_are_exit_three_without_semantic_fields(
     assert payload["status"] == status.value
     for semantic_field in (
         "decision",
-        "confidence",
         "location",
         "event",
         "temporal_relevance",

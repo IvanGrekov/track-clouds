@@ -339,11 +339,10 @@ class TelegramMonitor:
         token_usage = report.token_usage
         if token_usage is not None:
             LOGGER.info(
-                "AI observation completed (decision=%s, confidence=%.2f, reason_code=%s, "
+                "AI observation completed (decision=%s, reason_code=%s, "
                 "model=%s, message=%s/%s, elapsed_seconds=%.3f, attempts=%d, "
                 "input_tokens=%d, output_tokens=%d, total_tokens=%d)",
                 result.decision.value,
-                result.confidence,
                 result.reason_code.value,
                 model,
                 *key,
@@ -355,10 +354,9 @@ class TelegramMonitor:
             )
             return
         LOGGER.info(
-            "AI observation completed (decision=%s, confidence=%.2f, reason_code=%s, "
+            "AI observation completed (decision=%s, reason_code=%s, "
             "model=%s, message=%s/%s, elapsed_seconds=%.3f, attempts=%d)",
             result.decision.value,
-            result.confidence,
             result.reason_code.value,
             model,
             *key,
