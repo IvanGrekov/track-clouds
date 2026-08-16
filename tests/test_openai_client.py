@@ -19,6 +19,8 @@ import telegram_monitor.openai_client as openai_client_module
 from telegram_monitor.ai_models import (
     AIDecision,
     AIObservationTechnicalStatus,
+    AIReasonCode,
+    AITemporalRelevance,
 )
 from telegram_monitor.models import AIObservationConfig
 from telegram_monitor.openai_client import (
@@ -87,14 +89,18 @@ def _config(**overrides: object) -> AIObservationConfig:
     return AIObservationConfig(**values)  # type: ignore[arg-type]
 
 
-def _request(*, marker: str = "дорогу перекрито") -> AIObservationRequest:
+def _request(
+    *,
+    marker: str = "дорогу перекрито",
+    notify_all: bool = False,
+) -> AIObservationRequest:
     return AIObservationRequest(
         message_text=f"На Городоцькій зараз {marker}",
         sent_at=datetime(2026, 8, 10, 9, 55, 20, tzinfo=UTC),
         message_age_seconds=8,
         trusted_area_context="Львів",
-        matched_keywords=("перекри",),
-        notify_all=False,
+        matched_keywords=() if notify_all else ("перекри",),
+        notify_all=notify_all,
     )
 
 
@@ -110,6 +116,18 @@ def _accepted_json() -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _notify_all_json() -> str:
+    payload = json.loads(_accepted_json())
+    payload.update(
+        location=None,
+        event=None,
+        temporal_relevance="unclear",
+        reason_code="notify_all_source",
+        reason="Джерело налаштоване приймати всі повідомлення.",
+    )
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _semantically_invalid_json() -> str:
@@ -343,6 +361,48 @@ async def test_classify_sends_exact_responses_request_and_returns_usage() -> Non
             "notify_all": False,
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_classify_accepts_notify_all_source_with_nullable_components() -> None:
+    client, sdk = _client([_sdk_response(_notify_all_json())])
+
+    outcome = await client.classify(_request(notify_all=True), timeout_seconds=1)
+
+    assert isinstance(outcome, AIObservationSuccess)
+    assert outcome.result.decision is AIDecision.ACCEPT
+    assert outcome.result.reason_code is AIReasonCode.NOTIFY_ALL_SOURCE
+    assert outcome.result.location is None
+    assert outcome.result.event is None
+    assert outcome.result.temporal_relevance is AITemporalRelevance.UNCLEAR
+
+    raw_input = sdk.responses.calls[0]["input"]
+    assert isinstance(raw_input, list)
+    input_payload = json.loads(raw_input[-1]["content"])
+    assert input_payload["prefilter"] == {
+        "matched_keywords": [],
+        "notify_all": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_classify_rejects_notify_all_source_for_regular_request() -> None:
+    client, _ = _client([_sdk_response(_notify_all_json())])
+
+    outcome = await client.classify(_request(), timeout_seconds=1)
+
+    assert isinstance(outcome, AIObservationFailure)
+    assert outcome.status is AIObservationTechnicalStatus.INVALID_RESPONSE
+
+
+@pytest.mark.asyncio
+async def test_classify_requires_notify_all_source_for_notify_all_request() -> None:
+    client, _ = _client([_sdk_response(_accepted_json())])
+
+    outcome = await client.classify(_request(notify_all=True), timeout_seconds=1)
+
+    assert isinstance(outcome, AIObservationFailure)
+    assert outcome.status is AIObservationTechnicalStatus.INVALID_RESPONSE
 
 
 @pytest.mark.asyncio

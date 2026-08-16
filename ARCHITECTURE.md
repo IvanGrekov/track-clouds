@@ -122,7 +122,7 @@ Responses API з `type = "json_schema"`, `name = "telegram_mobility_observation"
 `additionalProperties = false`. Усі поля є required; nullable `location` та `event`
 передаються як `null`, а не пропускаються. Цей JSON-файл є source of truth для wire format,
 а відповідність Python enums і моделі йому перевіряють loader та контрактні тести. Додатковий
-локальний parser окремо обмежує `reason` до 240 символів, оскільки `maxLength` не входить до
+локальний parser окремо обмежує `reason` до 350 символів, оскільки `maxLength` не входить до
 використаного Structured Outputs subset.
 
 Семантична відповідь моделюється frozen dataclass `AIObservationResult` із полями:
@@ -139,6 +139,14 @@ application logs залишають лише `decision`, `reason_code` та бе
 
 Важливі semantic mappings:
 
+- `prefilter.notify_all = true` завжди дає `decision = "accept"` і
+  `reason_code = "notify_all_source"`; `location` береться лише з тексту або
+  `trusted_area_context`, `event` — лише з тексту, обидва поля можуть бути `null`,
+  а `temporal_relevance` фактично залишається
+  `current`, `historical` або `unclear`;
+- `notify_all_source` дозволений лише з `prefilter.notify_all = true`; коли flag має
+  значення `false`, звичайний `accept` вимагає `meets_all_criteria`, `current` і
+  непорожні `location` та `event`;
 - `unrelated_content` є лише reject-причиною і поєднується з `decision = "reject"`;
 - `no_location` і `no_event` можуть супроводжувати `review`, якщо повідомлення
   потенційно корисне, але йому бракує цього контексту; коли відсутній компонент

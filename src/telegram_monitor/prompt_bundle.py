@@ -168,7 +168,7 @@ def _validate_response_format(response_format: dict[str, Any]) -> None:
             "enum": [reason.value for reason in AIReasonCode],
         },
         # ``maxLength`` is not supported by the Responses Structured Outputs
-        # subset. The local typed parser still enforces its 240-character cap.
+        # subset. The local typed parser still enforces its 350-character cap.
         "reason": {"type": "string"},
     }
     if properties != expected_properties:

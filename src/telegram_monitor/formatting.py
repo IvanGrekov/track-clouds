@@ -84,7 +84,7 @@ def _render_ai_observation(observation: AIObservationReport) -> str:
                 f"Event: {_sanitize_ai_text(result.event, 512)}",
                 f"Relevance: {result.temporal_relevance.value}",
                 f"Code reason: {result.reason_code.value}",
-                f"Reason: {_sanitize_ai_text(result.reason, 240)}",
+                f"Reason: {_sanitize_ai_text(result.reason, 350)}",
                 f"Delay: {observation.elapsed_seconds:.3f} s",
             )
         )

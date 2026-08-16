@@ -21,7 +21,7 @@ __all__ = [
     "parse_ai_observation_response",
 ]
 
-AI_REASON_MAX_LENGTH: Final = 240
+AI_REASON_MAX_LENGTH: Final = 350
 AI_RESPONSE_FIELD_ORDER: Final = (
     "decision",
     "location",
@@ -47,6 +47,7 @@ class AITemporalRelevance(StrEnum):
 
 class AIReasonCode(StrEnum):
     MEETS_ALL_CRITERIA = "meets_all_criteria"
+    NOTIFY_ALL_SOURCE = "notify_all_source"
     SPAM_OR_SCAM = "spam_or_scam"
     UNRELATED_CONTENT = "unrelated_content"
     NO_LOCATION = "no_location"
@@ -117,7 +118,23 @@ def _parse_nullable_text(value: object, *, field_name: str) -> str | None:
     return cleaned
 
 
-def _validate_semantics(result: AIObservationResult) -> None:
+def _validate_semantics(
+    result: AIObservationResult,
+    *,
+    notify_all: bool,
+) -> None:
+    if notify_all:
+        if result.decision is not AIDecision.ACCEPT:
+            raise AIResponseValidationError("AI notify_all response requires decision accept")
+        if result.reason_code is not AIReasonCode.NOTIFY_ALL_SOURCE:
+            raise AIResponseValidationError(
+                "AI notify_all response requires reason_code notify_all_source"
+            )
+        return
+
+    if result.reason_code is AIReasonCode.NOTIFY_ALL_SOURCE:
+        raise AIResponseValidationError("AI reason_code notify_all_source requires notify_all=true")
+
     review_codes = {
         AIReasonCode.AMBIGUOUS_LOCATION,
         AIReasonCode.AMBIGUOUS_EVENT,
@@ -186,7 +203,11 @@ def _validate_semantics(result: AIObservationResult) -> None:
         )
 
 
-def parse_ai_observation_response(payload: object) -> AIObservationResult:
+def parse_ai_observation_response(
+    payload: object,
+    *,
+    notify_all: bool = False,
+) -> AIObservationResult:
     """Parse one strict Structured Outputs payload without coercing field values.
 
     Error messages intentionally describe only the violated contract and never echo
@@ -241,5 +262,5 @@ def parse_ai_observation_response(payload: object) -> AIObservationResult:
         reason_code=reason_code,
         reason=reason,
     )
-    _validate_semantics(result)
+    _validate_semantics(result, notify_all=notify_all)
     return result

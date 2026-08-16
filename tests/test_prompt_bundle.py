@@ -474,6 +474,24 @@ def test_load_prompt_bundle_rejects_schema_drift_from_typed_contract(tmp_path: P
         load_prompt_bundle(_config(bundle_path))
 
 
+def test_load_prompt_bundle_requires_notify_all_source_reason_code(tmp_path: Path) -> None:
+    bundle_path = tmp_path / "bundle"
+    response_format = _valid_response_format()
+    schema = response_format["schema"]
+    assert isinstance(schema, dict)
+    properties = schema["properties"]
+    assert isinstance(properties, dict)
+    reason_code = properties["reason_code"]
+    assert isinstance(reason_code, dict)
+    reason_code["enum"] = [
+        value for value in reason_code["enum"] if value != AIReasonCode.NOTIFY_ALL_SOURCE.value
+    ]
+    _write_bundle(bundle_path, response_format=response_format)
+
+    with pytest.raises(ConfigurationError, match="typed AI response contract"):
+        load_prompt_bundle(_config(bundle_path))
+
+
 def test_load_prompt_bundle_rejects_extra_schema_property(tmp_path: Path) -> None:
     bundle_path = tmp_path / "bundle"
     response_format = _valid_response_format()

@@ -74,7 +74,7 @@ def _success() -> AIObservationSuccess:
         prompt_hash="a" * 64,
         api_latency_seconds=0.7,
         attempts=1,
-        token_usage=AIObservationTokenUsage(300, 50, 350),
+        token_usage=AIObservationTokenUsage(350, 50, 350),
     )
 
 
@@ -139,7 +139,7 @@ async def test_observe_builds_request_at_call_time() -> None:
     assert report.result == _result()
     assert report.status is None
     assert report.api_latency_seconds == 0.7
-    assert report.token_usage == AIObservationTokenUsage(300, 50, 350)
+    assert report.token_usage == AIObservationTokenUsage(350, 50, 350)
     assert len(client.requests) == 1
     request = client.requests[0]
     assert request.message_age_seconds == 45

@@ -413,6 +413,7 @@ class OpenAIObservationClient:
                 response,
                 started=started,
                 attempts=attempts[0],
+                notify_all=request.notify_all,
             )
 
         return self._failure(
@@ -465,6 +466,7 @@ class OpenAIObservationClient:
         *,
         started: float,
         attempts: int,
+        notify_all: bool,
     ) -> AIObservationOutcome:
         request_id = _safe_request_id(_member(response, "_request_id"))
         response_text: str | None = None
@@ -528,7 +530,10 @@ class OpenAIObservationClient:
                     request_id=request_id,
                     response_text=response_text,
                 )
-            result = parse_ai_observation_response(response_text)
+            result = parse_ai_observation_response(
+                response_text,
+                notify_all=notify_all,
+            )
         except (AIResponseValidationError, TypeError, ValueError, AttributeError):
             return self._failure(
                 AIObservationTechnicalStatus.INVALID_RESPONSE,

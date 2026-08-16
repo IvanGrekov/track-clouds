@@ -32,6 +32,7 @@
                 "type": "string",
                 "enum": [
                     "meets_all_criteria",
+                    "notify_all_source",
                     "spam_or_scam",
                     "unrelated_content",
                     "no_location",

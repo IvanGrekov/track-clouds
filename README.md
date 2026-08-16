@@ -213,11 +213,22 @@ trusted_area_context = "Львів та околиці"
 повертає типізоване рішення або нормалізований технічний статус. `timeout`, `rate_limited`,
 `refusal`, `api_error` та `invalid_response` не перетворюються на штучний `review`.
 
-Для semantic result `unrelated_content` є reject-кодом. `no_location` і `no_event`
-можуть означати `review`, якщо текст потенційно корисний, але йому бракує
-контексту, або `reject`, якщо відсутній компонент однозначно робить повідомлення
-некорисним. `historical_context` завжди поєднується з `decision = "review"` і
-`temporal_relevance = "historical"`.
+Важливі semantic mappings:
+
+- коли `prefilter.notify_all = true`, результат завжди має `decision = "accept"` і
+  `reason_code = "notify_all_source"`; `location` заповнюється лише з тексту або
+  `trusted_area_context`, `event` — лише з тексту, обидва поля можуть бути `null`,
+  а temporal relevance залишається
+  фактичним: `current`, `historical` або `unclear`;
+- `notify_all_source` недопустимий, коли `prefilter.notify_all = false`; у звичайному
+  keyword path `accept` вимагає `meets_all_criteria`, `current` і непорожні
+  `location` та `event`;
+- `unrelated_content` є reject-кодом;
+- `no_location` і `no_event` можуть означати `review`, якщо текст потенційно корисний,
+  але йому бракує контексту, або `reject`, якщо відсутній компонент однозначно
+  робить повідомлення некорисним;
+- `historical_context` завжди поєднується з `decision = "review"` і
+  `temporal_relevance = "historical"`.
 
 Коли observation увімкнений, notification worker викликає його лише після source/filter,
 deduplication та automatic-forward перевірок. Уся AI-операція має один end-to-end budget
@@ -285,7 +296,8 @@ telegram-monitor ai-check --live --stdin \
 - `--trusted-area-context TEXT` — перевизначити глобальний trusted area для цього
   виклику;
 - `--matched-keyword TEXT` — додати prefilter match; flag можна повторювати;
-- `--notify-all` — змоделювати prefilter джерела з `notify_all = true`;
+- `--notify-all` — змоделювати prefilter джерела з `notify_all = true`; цей path
+  повертає `accept` з `reason_code = "notify_all_source"`;
 - `--message-age-seconds N` — задати невід’ємний вік повідомлення; за
   замовчуванням `0`.
 
