@@ -22,6 +22,7 @@ from .registry import SourceRegistry
 
 LOGGER = logging.getLogger(__name__)
 _SHUTDOWN_DELIVERY_GRACE_SECONDS = 5.0
+_AI_RESPONSE_LOG_MAX_CHARS = 16_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,6 +323,22 @@ class TelegramMonitor:
     def _log_ai_observation(key: MessageKey, report: AIObservationReport) -> None:
         model = _safe_log_text(report.model, max_chars=128)
         if report.status is not None:
+            if report.status is AIObservationTechnicalStatus.INVALID_RESPONSE:
+                response_text = _safe_log_text(
+                    report.response_text or "",
+                    max_chars=_AI_RESPONSE_LOG_MAX_CHARS,
+                )
+                LOGGER.error(
+                    "AI observation failed (status=%s, model=%s, "
+                    "message=%s/%s, elapsed_seconds=%.3f, attempts=%d, ai_response=%s)",
+                    report.status.value,
+                    model,
+                    *key,
+                    report.elapsed_seconds,
+                    report.attempts,
+                    response_text,
+                )
+                return
             LOGGER.error(
                 "AI observation failed (status=%s, model=%s, "
                 "message=%s/%s, elapsed_seconds=%.3f, attempts=%d)",

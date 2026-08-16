@@ -171,7 +171,11 @@ def _semantic_report(result: AIObservationResult) -> AIObservationReport:
     )
 
 
-def _failure_report(status: AIObservationTechnicalStatus) -> AIObservationReport:
+def _failure_report(
+    status: AIObservationTechnicalStatus,
+    *,
+    response_text: str | None = None,
+) -> AIObservationReport:
     return AIObservationReport(
         result=None,
         status=status,
@@ -181,6 +185,7 @@ def _failure_report(status: AIObservationTechnicalStatus) -> AIObservationReport
         api_latency_seconds=None,
         attempts=1,
         token_usage=None,
+        response_text=response_text,
     )
 
 
@@ -573,6 +578,41 @@ async def test_technical_observation_is_delivered_and_next_message_is_processed(
     assert "Description:" in notifier.sent[0]
     assert "Decision:" not in notifier.sent[0]
     assert "Decision: accept" in notifier.sent[1]
+    await monitor.close()
+
+
+@pytest.mark.asyncio
+async def test_invalid_ai_response_is_logged_but_not_added_to_telegram(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    discussion_id = -1001111111111
+    client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])
+    config = MonitorConfig(
+        sources=(SourceRule(peer="@discussion", keywords=("k8s",)),),
+        timezone="UTC",
+        ai_observation=AIObservationConfig(enabled=True),
+    )
+    response_text = '{"decision":"accept",\n"unexpected":"field"}'
+    notifier = FakeNotifier()
+    observer = FakeObserver(
+        [
+            _failure_report(
+                AIObservationTechnicalStatus.INVALID_RESPONSE,
+                response_text=response_text,
+            )
+        ]
+    )
+    monitor = TelegramMonitor(client, config, notifier, ai_observer=observer)
+    caplog.set_level(logging.ERROR, logger="telegram_monitor.service")
+    await monitor.prepare()
+
+    await monitor.handle_event(FakeEvent(discussion_id, 58, "k8s message"))
+    await monitor._queue.join()
+
+    assert len(notifier.sent) == 1
+    assert "Status: invalid_response" in notifier.sent[0]
+    assert "unexpected" not in notifier.sent[0]
+    assert 'ai_response={"decision":"accept", "unexpected":"field"}' in caplog.text
     await monitor.close()
 
 

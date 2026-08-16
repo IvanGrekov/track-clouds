@@ -241,11 +241,12 @@ async def test_unexpected_client_error_is_api_error_without_raw_data() -> None:
 @pytest.mark.asyncio
 async def test_client_failure_metadata_is_preserved() -> None:
     failure = AIObservationFailure(
-        status=AIObservationTechnicalStatus.RATE_LIMITED,
+        status=AIObservationTechnicalStatus.INVALID_RESPONSE,
         model="gpt-5.4-nano-2026-03-17",
         prompt_hash="b" * 64,
         api_latency_seconds=0.25,
         attempts=2,
+        response_text="malformed model output",
     )
     observer = _observer(StubClient([failure]))
 
@@ -254,10 +255,12 @@ async def test_client_failure_metadata_is_preserved() -> None:
         trusted_area_context=None,
     )
 
-    assert report.status is AIObservationTechnicalStatus.RATE_LIMITED
+    assert report.status is AIObservationTechnicalStatus.INVALID_RESPONSE
     assert report.prompt_hash == "b" * 64
     assert report.api_latency_seconds == 0.25
     assert report.attempts == 2
+    assert report.response_text == "malformed model output"
+    assert "malformed model output" not in repr(report)
 
 
 @pytest.mark.asyncio
