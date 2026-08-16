@@ -66,9 +66,10 @@ def test_parse_ai_observation_response_accepts_reject_and_review() -> None:
     assert parse_ai_observation_response(review).decision is AIDecision.REVIEW
 
 
-def test_reason_code_contract_includes_unrelated_content() -> None:
+def test_reason_code_contract_matches_schema_values() -> None:
     assert {reason_code.value for reason_code in AIReasonCode} == {
         "meets_all_criteria",
+        "notify_all_source",
         "spam_or_scam",
         "no_location",
         "no_event",
@@ -95,6 +96,56 @@ def test_unrelated_content_is_a_reject_reason() -> None:
 
     assert result.decision is AIDecision.REJECT
     assert result.reason_code is AIReasonCode.UNRELATED_CONTENT
+
+
+@pytest.mark.parametrize("temporal_relevance", ["current", "historical", "unclear"])
+def test_notify_all_source_accepts_nullable_components_with_any_temporal_relevance(
+    temporal_relevance: str,
+) -> None:
+    payload = _accept_payload()
+    payload.update(
+        location=None,
+        event=None,
+        temporal_relevance=temporal_relevance,
+        reason_code="notify_all_source",
+        reason="Джерело налаштоване приймати всі повідомлення.",
+    )
+
+    result = parse_ai_observation_response(payload, notify_all=True)
+
+    assert result.decision is AIDecision.ACCEPT
+    assert result.reason_code is AIReasonCode.NOTIFY_ALL_SOURCE
+    assert result.location is None
+    assert result.event is None
+    assert result.temporal_relevance.value == temporal_relevance
+
+
+@pytest.mark.parametrize("decision", ["reject", "review"])
+def test_notify_all_source_requires_accept_decision(decision: str) -> None:
+    payload = _accept_payload()
+    payload.update(
+        decision=decision,
+        location=None,
+        event=None,
+        temporal_relevance="unclear",
+        reason_code="notify_all_source",
+    )
+
+    with pytest.raises(AIResponseValidationError, match="notify_all.*decision accept"):
+        parse_ai_observation_response(payload, notify_all=True)
+
+
+def test_notify_all_requires_notify_all_source_reason_code() -> None:
+    with pytest.raises(AIResponseValidationError, match="notify_all_source"):
+        parse_ai_observation_response(_accept_payload(), notify_all=True)
+
+
+def test_notify_all_source_is_forbidden_for_regular_sources() -> None:
+    payload = _accept_payload()
+    payload["reason_code"] = "notify_all_source"
+
+    with pytest.raises(AIResponseValidationError, match="requires notify_all=true"):
+        parse_ai_observation_response(payload, notify_all=False)
 
 
 @pytest.mark.parametrize("decision", ["review", "reject"])

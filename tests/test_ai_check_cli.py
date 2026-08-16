@@ -101,6 +101,24 @@ def _success(decision: AIDecision) -> AIObservationSuccess:
     )
 
 
+def _notify_all_success() -> AIObservationSuccess:
+    return AIObservationSuccess(
+        result=AIObservationResult(
+            decision=AIDecision.ACCEPT,
+            location=None,
+            event=None,
+            temporal_relevance=AITemporalRelevance.UNCLEAR,
+            reason_code=AIReasonCode.NOTIFY_ALL_SOURCE,
+            reason="Джерело налаштоване приймати всі повідомлення.",
+        ),
+        model="gpt-5.4-nano-2026-03-17",
+        prompt_hash="a" * 64,
+        api_latency_seconds=0.321,
+        attempts=1,
+        token_usage=AIObservationTokenUsage(100, 20, 120),
+    )
+
+
 def _failure(status: AIObservationTechnicalStatus) -> AIObservationFailure:
     return AIObservationFailure(
         status=status,
@@ -399,6 +417,35 @@ async def test_explicit_area_context_overrides_configured_fallback(
     request, _ = client.classify_calls[0]
     assert request.trusted_area_context == "Київ"
     _payload(capsys)
+
+
+@pytest.mark.asyncio
+async def test_notify_all_live_check_preserves_request_context_and_nullable_result(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = FakeAIClient(_notify_all_success())
+
+    exit_code = await cli._run_ai_check(
+        "Повідомлення з джерела, де дозволені всі дописи",
+        _config(),
+        matched_keywords=(),
+        notify_all=True,
+        trusted_area_context=None,
+        message_age_seconds=0,
+        client_factory=lambda config: client,  # type: ignore[arg-type,return-value]
+    )
+
+    assert exit_code == 0
+    request, _ = client.classify_calls[0]
+    assert request.matched_keywords == ()
+    assert request.notify_all is True
+    payload = _payload(capsys)
+    assert payload["kind"] == "semantic"
+    assert payload["decision"] == "accept"
+    assert payload["reason_code"] == "notify_all_source"
+    assert payload["location"] is None
+    assert payload["event"] is None
+    assert payload["temporal_relevance"] == "unclear"
 
 
 @pytest.mark.asyncio
