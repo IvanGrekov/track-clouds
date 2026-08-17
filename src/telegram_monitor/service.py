@@ -353,14 +353,16 @@ class TelegramMonitor:
         result = report.result
         if result is None:  # pragma: no cover - guarded by AIObservationReport validation.
             return
+        decision_fields = f"decision={result.decision.value}"
+        if result.reason_code is not None:
+            decision_fields += f", reason_code={result.reason_code.value}"
         token_usage = report.token_usage
         if token_usage is not None:
             LOGGER.info(
-                "AI observation completed (decision=%s, reason_code=%s, "
+                "AI observation completed (%s, "
                 "model=%s, message=%s/%s, elapsed_seconds=%.3f, attempts=%d, "
                 "input_tokens=%d, output_tokens=%d, total_tokens=%d)",
-                result.decision.value,
-                result.reason_code.value,
+                decision_fields,
                 model,
                 *key,
                 report.elapsed_seconds,
@@ -371,10 +373,9 @@ class TelegramMonitor:
             )
             return
         LOGGER.info(
-            "AI observation completed (decision=%s, reason_code=%s, "
+            "AI observation completed (%s, "
             "model=%s, message=%s/%s, elapsed_seconds=%.3f, attempts=%d)",
-            result.decision.value,
-            result.reason_code.value,
+            decision_fields,
             model,
             *key,
             report.elapsed_seconds,

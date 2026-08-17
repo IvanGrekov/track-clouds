@@ -9,14 +9,13 @@
             "decision",
             "location",
             "event",
-            "temporal_relevance",
             "reason_code",
             "reason"
         ],
         "properties": {
             "decision": {
                 "type": "string",
-                "enum": ["accept", "reject", "review"]
+                "enum": ["accept", "reject"]
             },
             "location": {
                 "type": ["string", "null"]
@@ -24,30 +23,18 @@
             "event": {
                 "type": ["string", "null"]
             },
-            "temporal_relevance": {
-                "type": "string",
-                "enum": ["current", "historical", "unclear"]
-            },
             "reason_code": {
-                "type": "string",
+                "type": ["string", "null"],
                 "enum": [
-                    "meets_all_criteria",
-                    "notify_all_source",
                     "spam_or_scam",
                     "unrelated_content",
-                    "no_location",
-                    "no_event",
                     "only_opinion_or_emotion",
                     "political_commentary",
-                    "ambiguous_location",
-                    "ambiguous_event",
-                    "ambiguous_recency",
-                    "ambiguous_context",
-                    "historical_context"
+                    null
                 ]
             },
             "reason": {
-                "type": "string"
+                "type": ["string", "null"]
             }
         }
     }

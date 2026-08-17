@@ -17,7 +17,6 @@ from telegram_monitor.ai_models import (
     AIObservationResult,
     AIObservationTechnicalStatus,
     AIReasonCode,
-    AITemporalRelevance,
 )
 from telegram_monitor.models import (
     AIObservationConfig,
@@ -67,26 +66,11 @@ def _result(decision: AIDecision) -> AIObservationResult:
             decision=decision,
             location="Городоцька",
             event="перекрито рух",
-            temporal_relevance=AITemporalRelevance.CURRENT,
-            reason_code=AIReasonCode.MEETS_ALL_CRITERIA,
-            reason="Є актуальна подія та конкретна локація.",
-        )
-    if decision is AIDecision.REJECT:
-        return AIObservationResult(
-            decision=decision,
-            location=None,
-            event="перекрито рух",
-            temporal_relevance=AITemporalRelevance.CURRENT,
-            reason_code=AIReasonCode.NO_LOCATION,
-            reason="У повідомленні немає достатньо зрозумілої локації.",
         )
     return AIObservationResult(
         decision=decision,
-        location="Стрийська",
-        event="можлива перешкода",
-        temporal_relevance=AITemporalRelevance.UNCLEAR,
-        reason_code=AIReasonCode.AMBIGUOUS_RECENCY,
-        reason="Часову актуальність неможливо визначити надійно.",
+        reason_code=AIReasonCode.UNRELATED_CONTENT,
+        reason="Повідомлення явно не стосується стану маршруту.",
     )
 
 
@@ -105,11 +89,6 @@ def _notify_all_success() -> AIObservationSuccess:
     return AIObservationSuccess(
         result=AIObservationResult(
             decision=AIDecision.ACCEPT,
-            location=None,
-            event=None,
-            temporal_relevance=AITemporalRelevance.UNCLEAR,
-            reason_code=AIReasonCode.NOTIFY_ALL_SOURCE,
-            reason="Джерело налаштоване приймати всі повідомлення.",
         ),
         model="gpt-5.4-nano-2026-03-17",
         prompt_hash="a" * 64,
@@ -442,10 +421,7 @@ async def test_notify_all_live_check_preserves_request_context_and_nullable_resu
     payload = _payload(capsys)
     assert payload["kind"] == "semantic"
     assert payload["decision"] == "accept"
-    assert payload["reason_code"] == "notify_all_source"
-    assert payload["location"] is None
-    assert payload["event"] is None
-    assert payload["temporal_relevance"] == "unclear"
+    assert set(payload) == {"kind", "decision", "metadata"}
 
 
 @pytest.mark.asyncio
@@ -471,16 +447,11 @@ async def test_semantic_decisions_are_successful_json_results(
     payload = _payload(capsys)
     assert payload["kind"] == "semantic"
     assert payload["decision"] == decision.value
-    assert set(payload) == {
-        "kind",
-        "decision",
-        "location",
-        "event",
-        "temporal_relevance",
-        "reason_code",
-        "reason",
-        "metadata",
-    }
+    semantic_fields = set(payload) - {"kind", "decision", "metadata"}
+    if decision is AIDecision.ACCEPT:
+        assert semantic_fields == {"location", "event"}
+    else:
+        assert semantic_fields == {"reason_code", "reason"}
     assert payload["metadata"] == {
         "model": "gpt-5.4-nano-2026-03-17",
         "prompt_hash": "a" * 64,
@@ -521,7 +492,6 @@ async def test_technical_statuses_are_exit_three_without_semantic_fields(
         "decision",
         "location",
         "event",
-        "temporal_relevance",
         "reason_code",
         "reason",
     ):

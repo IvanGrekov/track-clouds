@@ -8,7 +8,6 @@ from telegram_monitor.ai_models import (
     AIObservationResult,
     AIObservationTechnicalStatus,
     AIReasonCode,
-    AITemporalRelevance,
 )
 from telegram_monitor.formatting import (
     TELEGRAM_MESSAGE_LIMIT,
@@ -39,16 +38,12 @@ def _success_observation(
     *,
     location: str | None = "Городоцька, біля цирку",
     event: str | None = "перекрита права смуга",
-    reason: str = "Є актуальне обмеження руху та достатньо конкретна локація.",
     elapsed_seconds: float = 0.842,
 ) -> SimpleNamespace:
     result = AIObservationResult(
         decision=AIDecision.ACCEPT,
         location=location,
         event=event,
-        temporal_relevance=AITemporalRelevance.CURRENT,
-        reason_code=AIReasonCode.MEETS_ALL_CRITERIA,
-        reason=reason,
     )
     return SimpleNamespace(
         result=result,
@@ -125,13 +120,12 @@ def test_renders_successful_ai_observation_without_experiment_metadata() -> None
         ai_observation=_success_observation(),  # type: ignore[arg-type]
     )
 
-    assert "\n\nAI review:\n" in rendered
+    assert "\n\nAI analysis:\n" in rendered
     assert "Decision: accept" in rendered
     assert "Location: Городоцька, біля цирку" in rendered
     assert "Event: перекрита права смуга" in rendered
-    assert "Relevance: current" in rendered
-    assert "Code reason: meets_all_criteria" in rendered
-    assert "Reason: Є актуальне обмеження руху" in rendered
+    assert "Reason code:" not in rendered
+    assert "Reason:" not in rendered
     assert "Delay: 0.842 s" in rendered
     assert "Model:" not in rendered
     assert "Policy:" not in rendered
@@ -139,45 +133,12 @@ def test_renders_successful_ai_observation_without_experiment_metadata() -> None
     assert rendered.endswith("Open: https://t.me/cloud_chat/42")
 
 
-@pytest.mark.parametrize(
-    ("result", "expected_lines"),
-    (
-        (
-            AIObservationResult(
-                decision=AIDecision.REJECT,
-                location=None,
-                event="особиста думка про погоду",
-                temporal_relevance=AITemporalRelevance.CURRENT,
-                reason_code=AIReasonCode.ONLY_OPINION_OR_EMOTION,
-                reason="Повідомлення не описує корисний стан маршруту.",
-            ),
-            (
-                "Decision: reject",
-                "Location: —",
-                "Code reason: only_opinion_or_emotion",
-            ),
-        ),
-        (
-            AIObservationResult(
-                decision=AIDecision.REVIEW,
-                location="Стрийська",
-                event="можлива перешкода",
-                temporal_relevance=AITemporalRelevance.UNCLEAR,
-                reason_code=AIReasonCode.AMBIGUOUS_RECENCY,
-                reason="Неможливо визначити, коли спостерігалася перешкода.",
-            ),
-            (
-                "Decision: review",
-                "Relevance: unclear",
-                "Code reason: ambiguous_recency",
-            ),
-        ),
-    ),
-)
-def test_renders_reject_and_review_as_semantic_results(
-    result: AIObservationResult,
-    expected_lines: tuple[str, ...],
-) -> None:
+def test_renders_only_reject_reason_fields() -> None:
+    result = AIObservationResult(
+        decision=AIDecision.REJECT,
+        reason_code=AIReasonCode.ONLY_OPINION_OR_EMOTION,
+        reason="Повідомлення не описує корисний стан маршруту.",
+    )
     observation = SimpleNamespace(
         result=result,
         status=None,
@@ -193,8 +154,11 @@ def test_renders_reject_and_review_as_semantic_results(
         ai_observation=observation,  # type: ignore[arg-type]
     )
 
-    for expected_line in expected_lines:
-        assert expected_line in rendered
+    assert "Decision: reject" in rendered
+    assert "Reason code: only_opinion_or_emotion" in rendered
+    assert "Reason: Повідомлення не описує" in rendered
+    assert "Location:" not in rendered
+    assert "Event:" not in rendered
     assert "Status:" not in rendered
     assert rendered.endswith("Open: https://t.me/cloud_chat/42")
 
@@ -220,7 +184,7 @@ def test_renders_reject_and_review_as_semantic_results(
         ),
         (
             AIObservationTechnicalStatus.INVALID_RESPONSE,
-            "Відповідь AI не відповідала очікуваній схемі або правилам узгодженості.",
+            "Відповідь AI була неповною або не містила коректного рішення.",
         ),
     ),
 )
@@ -235,7 +199,7 @@ def test_renders_safe_technical_ai_observation(
         ai_observation=_technical_observation(status),  # type: ignore[arg-type]
     )
 
-    assert f"AI review:\nStatus: {status.value}\nDescription: {description}" in rendered
+    assert f"AI analysis:\nStatus: {status.value}\nDescription: {description}" in rendered
     assert "Decision:" not in rendered
     assert "Location:" not in rendered
     assert "Event:" not in rendered
@@ -246,7 +210,7 @@ def test_renders_safe_technical_ai_observation(
     assert rendered.endswith("Open: https://t.me/cloud_chat/42")
 
 
-def test_sanitizes_untrusted_ai_text_and_formats_null_as_dash() -> None:
+def test_sanitizes_untrusted_optional_accept_fields_and_omits_null() -> None:
     rendered = render_notification(
         _message(),
         timezone_name="UTC",
@@ -254,14 +218,11 @@ def test_sanitizes_untrusted_ai_text_and_formats_null_as_dash() -> None:
         ai_observation=_success_observation(  # type: ignore[arg-type]
             location=None,
             event="аварія\n\r\tбіля\u202e мосту",
-            reason="  Рух\nускладнено.\x00  ",
         ),
     )
 
-    assert "Location: —" in rendered
+    assert "Location:" not in rendered
     assert "Event: аварія біля мосту" in rendered
-    assert "Reason: Рух ускладнено." in rendered
-    assert "\x00" not in rendered
     assert "\u202e" not in rendered
 
 
@@ -277,11 +238,10 @@ def test_ai_notification_preserves_ai_block_and_link_within_telegram_limit() -> 
         ai_observation=_success_observation(  # type: ignore[arg-type]
             location="location" * 1_000,
             event="event" * 1_000,
-            reason="reason" * 1_000,
         ),
     )
 
     assert len(rendered) <= TELEGRAM_MESSAGE_LIMIT
-    assert "\n\nAI review:\nDecision: accept" in rendered
+    assert "\n\nAI analysis:\nDecision: accept" in rendered
     assert "Delay: 0.842 s" in rendered
     assert rendered.endswith("Open: https://t.me/cloud_chat/42")

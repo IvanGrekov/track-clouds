@@ -10,8 +10,9 @@ bot_subscriber_limit = 10
 
 timezone = "Europe/Kyiv"
 
-# Optional AI observation settings. When enabled, observation runs after deterministic filters
-# and adds a non-blocking review block to the same Telegram alert.
+# Optional AI observation settings. When enabled, binary classification runs after deterministic
+# filters. ACCEPT, REJECT and technical failures all continue to Telegram delivery so the
+# classifier can be evaluated on the real message stream.
 [ai_observation]
 enabled = false
 model = "gpt-5.4-nano-2026-03-17"

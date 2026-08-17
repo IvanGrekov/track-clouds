@@ -19,8 +19,6 @@ import telegram_monitor.openai_client as openai_client_module
 from telegram_monitor.ai_models import (
     AIDecision,
     AIObservationTechnicalStatus,
-    AIReasonCode,
-    AITemporalRelevance,
 )
 from telegram_monitor.models import AIObservationConfig
 from telegram_monitor.openai_client import (
@@ -54,11 +52,28 @@ def _response_format() -> dict[str, object]:
                 "decision",
                 "location",
                 "event",
-                "temporal_relevance",
                 "reason_code",
                 "reason",
             ],
-            "properties": {},
+            "properties": {
+                "decision": {
+                    "type": "string",
+                    "enum": ["accept", "reject"],
+                },
+                "location": {"type": ["string", "null"]},
+                "event": {"type": ["string", "null"]},
+                "reason_code": {
+                    "type": ["string", "null"],
+                    "enum": [
+                        "spam_or_scam",
+                        "unrelated_content",
+                        "only_opinion_or_emotion",
+                        "political_commentary",
+                        None,
+                    ],
+                },
+                "reason": {"type": ["string", "null"]},
+            },
         },
     }
 
@@ -110,9 +125,8 @@ def _accepted_json() -> str:
             "decision": "accept",
             "location": "Городоцька",
             "event": "перекрита права смуга",
-            "temporal_relevance": "current",
-            "reason_code": "meets_all_criteria",
-            "reason": "Є актуальна подія та конкретна локація.",
+            "reason_code": None,
+            "reason": None,
         },
         ensure_ascii=False,
     )
@@ -123,16 +137,32 @@ def _notify_all_json() -> str:
     payload.update(
         location=None,
         event=None,
-        temporal_relevance="unclear",
-        reason_code="notify_all_source",
-        reason="Джерело налаштоване приймати всі повідомлення.",
     )
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _semantically_invalid_json() -> str:
+def _rejected_json() -> str:
+    return json.dumps(
+        {
+            "decision": "reject",
+            "location": None,
+            "event": None,
+            "reason_code": "spam_or_scam",
+            "reason": "Повідомлення є рекламою шахрайської схеми.",
+        },
+        ensure_ascii=False,
+    )
+
+
+def _missing_decision_json() -> str:
     payload = json.loads(_accepted_json())
-    payload["location"] = None
+    payload.pop("decision")
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _invalid_decision_json() -> str:
+    payload = json.loads(_accepted_json())
+    payload["decision"] = "review"
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -364,17 +394,16 @@ async def test_classify_sends_exact_responses_request_and_returns_usage() -> Non
 
 
 @pytest.mark.asyncio
-async def test_classify_accepts_notify_all_source_with_nullable_components() -> None:
+async def test_classify_accepts_notify_all_with_nullable_components() -> None:
     client, sdk = _client([_sdk_response(_notify_all_json())])
 
     outcome = await client.classify(_request(notify_all=True), timeout_seconds=1)
 
     assert isinstance(outcome, AIObservationSuccess)
     assert outcome.result.decision is AIDecision.ACCEPT
-    assert outcome.result.reason_code is AIReasonCode.NOTIFY_ALL_SOURCE
+    assert outcome.result.reason_code is None
     assert outcome.result.location is None
     assert outcome.result.event is None
-    assert outcome.result.temporal_relevance is AITemporalRelevance.UNCLEAR
 
     raw_input = sdk.responses.calls[0]["input"]
     assert isinstance(raw_input, list)
@@ -386,18 +415,28 @@ async def test_classify_accepts_notify_all_source_with_nullable_components() -> 
 
 
 @pytest.mark.asyncio
-async def test_classify_rejects_notify_all_source_for_regular_request() -> None:
-    client, _ = _client([_sdk_response(_notify_all_json())])
+async def test_classify_tolerates_and_discards_invalid_auxiliary_fields() -> None:
+    payload = json.loads(_accepted_json())
+    payload.update(
+        location=42,
+        reason_code="unsupported_reason",
+        reason="REJECT-only field on an ACCEPT response",
+    )
+    client, _ = _client([_sdk_response(json.dumps(payload))])
 
     outcome = await client.classify(_request(), timeout_seconds=1)
 
-    assert isinstance(outcome, AIObservationFailure)
-    assert outcome.status is AIObservationTechnicalStatus.INVALID_RESPONSE
+    assert isinstance(outcome, AIObservationSuccess)
+    assert outcome.result.decision is AIDecision.ACCEPT
+    assert outcome.result.location is None
+    assert outcome.result.event == "перекрита права смуга"
+    assert outcome.result.reason_code is None
+    assert outcome.result.reason is None
 
 
 @pytest.mark.asyncio
-async def test_classify_requires_notify_all_source_for_notify_all_request() -> None:
-    client, _ = _client([_sdk_response(_accepted_json())])
+async def test_classify_requires_accept_decision_for_notify_all_request() -> None:
+    client, _ = _client([_sdk_response(_rejected_json())])
 
     outcome = await client.classify(_request(notify_all=True), timeout_seconds=1)
 
@@ -463,7 +502,11 @@ async def test_success_keeps_result_when_usage_is_missing_or_malformed(usage: ob
             AIObservationTechnicalStatus.INVALID_RESPONSE,
         ),
         (
-            _sdk_response(_semantically_invalid_json()),
+            _sdk_response(_missing_decision_json()),
+            AIObservationTechnicalStatus.INVALID_RESPONSE,
+        ),
+        (
+            _sdk_response(_invalid_decision_json()),
             AIObservationTechnicalStatus.INVALID_RESPONSE,
         ),
         (

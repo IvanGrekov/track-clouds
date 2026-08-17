@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .ai_models import AIObservationTechnicalStatus
+from .ai_models import AIDecision, AIObservationTechnicalStatus
 from .models import ConfigurationError, MessageSnapshot
 
 if TYPE_CHECKING:
@@ -27,7 +27,7 @@ _TECHNICAL_STATUS_DESCRIPTIONS = {
         "Під час звернення до OpenAI сталася технічна помилка, тому оцінку не отримано."
     ),
     AIObservationTechnicalStatus.INVALID_RESPONSE: (
-        "Відповідь AI не відповідала очікуваній схемі або правилам узгодженості."
+        "Відповідь AI була неповною або не містила коректного рішення."
     ),
 }
 
@@ -76,25 +76,26 @@ def _sanitize_ai_text(value: str | None, limit: int) -> str:
 def _render_ai_observation(observation: AIObservationReport) -> str:
     result = observation.result
     if result is not None:
-        return "\n".join(
-            (
-                "AI review:",
-                f"Decision: {result.decision.value}",
-                f"Location: {_sanitize_ai_text(result.location, 256)}",
-                f"Event: {_sanitize_ai_text(result.event, 512)}",
-                f"Relevance: {result.temporal_relevance.value}",
-                f"Code reason: {result.reason_code.value}",
-                f"Reason: {_sanitize_ai_text(result.reason, 350)}",
-                f"Delay: {observation.elapsed_seconds:.3f} s",
-            )
-        )
+        lines = ["AI analysis:", f"Decision: {result.decision.value}"]
+        if result.decision is AIDecision.ACCEPT:
+            if result.location is not None:
+                lines.append(f"Location: {_sanitize_ai_text(result.location, 256)}")
+            if result.event is not None:
+                lines.append(f"Event: {_sanitize_ai_text(result.event, 512)}")
+        else:
+            if result.reason_code is not None:
+                lines.append(f"Reason code: {result.reason_code.value}")
+            if result.reason is not None:
+                lines.append(f"Reason: {_sanitize_ai_text(result.reason, 350)}")
+        lines.append(f"Delay: {observation.elapsed_seconds:.3f} s")
+        return "\n".join(lines)
 
     status = observation.status
     if status is None:  # Defensive fallback; AIObservationReport validates this invariant.
         status = AIObservationTechnicalStatus.INVALID_RESPONSE
     return "\n".join(
         (
-            "AI review:",
+            "AI analysis:",
             f"Status: {status.value}",
             f"Description: {_TECHNICAL_STATUS_DESCRIPTIONS[status]}",
         )
