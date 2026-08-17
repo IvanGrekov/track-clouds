@@ -19,13 +19,16 @@ from .models import AIObservationConfig, ConfigurationError
 
 __all__ = [
     "AI_POLICY_PROMPT_ENV",
+    "AI_POLICY_PROMPT_EXTENDED_EXAMPLES_ENV",
     "PromptBundle",
     "load_prompt_bundle",
     "prepare_ai_observation",
 ]
 
 AI_POLICY_PROMPT_ENV = "AI_POLICY_PROMPT"
+AI_POLICY_PROMPT_EXTENDED_EXAMPLES_ENV = "AI_POLICY_PROMPT_EXTENDED_EXAMPLES"
 _HASH_FORMAT = "prompt-bundle"
+_POLICY_PROMPT_PART_SEPARATOR = "\n"
 _SYSTEM_PROMPT_FILENAME = "system-prompt.txt"
 _RESPONSE_FORMAT_FILENAME = "response-format.json"
 
@@ -102,6 +105,42 @@ def _load_policy_prompt(config: AIObservationConfig) -> str:
             label="policy prompt",
         )
     )
+
+
+def _load_optional_extended_examples(config: AIObservationConfig) -> str | None:
+    if AI_POLICY_PROMPT_EXTENDED_EXAMPLES_ENV in os.environ:
+        extended_examples = os.environ[AI_POLICY_PROMPT_EXTENDED_EXAMPLES_ENV]
+        if not extended_examples.strip():
+            return None
+        return _normalize_policy_prompt(extended_examples)
+
+    extended_examples_path = Path(config.policy_prompt_extended_examples_path).resolve()
+    try:
+        extended_examples = extended_examples_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except UnicodeDecodeError as error:
+        raise ConfigurationError(
+            "AI prompt bundle extended policy examples must be valid UTF-8: "
+            f"{extended_examples_path}"
+        ) from error
+    except OSError as error:
+        raise ConfigurationError(
+            f"Cannot read AI prompt bundle extended policy examples: {extended_examples_path}"
+        ) from error
+
+    if not extended_examples.strip():
+        return None
+    return _normalize_policy_prompt(extended_examples)
+
+
+def _append_extended_examples(
+    policy_prompt: str,
+    extended_examples: str | None,
+) -> str:
+    if extended_examples is None:
+        return policy_prompt
+    return f"{policy_prompt}{_POLICY_PROMPT_PART_SEPARATOR}{extended_examples}"
 
 
 def _validate_response_format(response_format: dict[str, Any]) -> None:
@@ -196,8 +235,10 @@ def load_prompt_bundle(config: AIObservationConfig) -> PromptBundle:
     """Load, validate and hash the bundle selected by ``config``.
 
     The private policy comes from ``AI_POLICY_PROMPT`` when that environment variable
-    is present, otherwise from ``config.policy_prompt_path``. This function does not
-    read API credentials or make an OpenAI API request.
+    is present, otherwise from ``config.policy_prompt_path``. Optional extended
+    examples come from ``AI_POLICY_PROMPT_EXTENDED_EXAMPLES`` when present, otherwise
+    from ``config.policy_prompt_extended_examples_path`` when that file exists. This
+    function does not read API credentials or make an OpenAI API request.
     """
 
     if not isinstance(config, AIObservationConfig):
@@ -211,7 +252,10 @@ def load_prompt_bundle(config: AIObservationConfig) -> PromptBundle:
         bundle_path / _SYSTEM_PROMPT_FILENAME,
         label="system prompt",
     )
-    policy_prompt = _load_policy_prompt(config)
+    policy_prompt = _append_extended_examples(
+        _load_policy_prompt(config),
+        _load_optional_extended_examples(config),
+    )
 
     response_format = _read_json_object(
         bundle_path / _RESPONSE_FORMAT_FILENAME,

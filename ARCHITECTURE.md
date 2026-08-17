@@ -23,7 +23,7 @@ Telegram Keyword Monitor — це окремий event-driven Python-серві�
 | Telegram bot client | Telegram Bot API через HTTPX | `/start`, `/stop` та push-розсилка підписникам |
 | Конфігурація секретів | `python-dotenv` | Завантаження `.env` |
 | Business-конфіг | TOML через стандартний `tomllib` | Локальні джерела, фільтри та runtime-параметри |
-| AI observation contract | UTF-8 text + strict JSON Schema | Поточні system prompt і response schema, приватна policy, typed result і reproducible hash |
+| AI observation contract | UTF-8 text + strict JSON Schema | Поточні system prompt і response schema, приватна base policy з optional extension, typed result і reproducible hash |
 | AI API client | OpenAI Python SDK 2.x + `AsyncOpenAI` Responses API | Ізольований request, bounded retries, timeout і failure normalization |
 | Фільтрація | Власний Unicode substring matcher | Позитивні `keywords`, негативні `keywords_to_skip`, NFKC та `casefold()` |
 | Персистентний стан | SQLite | Підписники бота та Bot API update offset |
@@ -385,9 +385,10 @@ failure виникає після startup, notifier відключає Telethon 
 
 Business-конфіг зберігається в локальному `config.toml`: джерела, keywords, режим доставки,
 timezone, ліміти черг і retry-параметри. Вкладена `[ai_observation]` містить feature flag,
-model, шляхи до поточного tracked prompt bundle та приватного policy-файла,
-30-секундний operation budget, request/retry limits і глобальний trusted area context. Кожен
-`[[sources]]` може перевизначити цей контекст своїм `trusted_area_context`.
+model, шляхи до поточного tracked prompt bundle, обов'язкового приватного base policy-файла
+та optional extension-файла, 30-секундний operation budget, request/retry limits і
+глобальний trusted area context. Кожен `[[sources]]` може перевизначити цей контекст своїм
+`trusted_area_context`.
 
 `request_attempts` рахує всі OpenAI HTTP attempts, включно з першим. Caller передає залишок
 спільного budget у `classify()`, а `operation_timeout_seconds` задає його конфігураційну
@@ -397,19 +398,29 @@ retries вимкнені. Допустимі `reasoning_effort`: `none`, `low`, 
 
 Файл ігнорується Git; у репозиторії є лише `config.example.toml`. За замовчуванням він
 читається з поточної директорії, а `MONITOR_CONFIG_FILE` дозволяє задати інший шлях.
-Відносні `prompt_bundle_path` і `policy_prompt_path` завжди резолвляться від директорії
-config-файлу, тому не залежать від process CWD.
+Відносні `prompt_bundle_path`, `policy_prompt_path` і
+`policy_prompt_extended_examples_path` завжди резолвляться від директорії config-файлу,
+тому не залежать від process CWD.
 
 Поточний tracked bundle `prompts` складається із `system-prompt.txt` і strict
-`response-format.json`. Предметна policy зберігається окремо: локально в ignored
-`policy-prompt.txt`, а в Railway — у multiline environment variable `AI_POLICY_PROMPT`.
-Environment має пріоритет над `policy_prompt_path`; порожнє environment-значення є помилкою.
+`response-format.json`. Предметна policy зберігається окремо: обов'язкова base policy —
+локально в ignored `policy-prompt.txt`, а в Railway у required multiline variable
+`AI_POLICY_PROMPT`. Опціональні розширені приклади зберігаються в ignored
+`policy-prompt-extended-examples.txt` або Railway variable
+`AI_POLICY_PROMPT_EXTENDED_EXAMPLES` і додаються після base policy.
 
-Loader структурно перевіряє UTF-8/JSON, непорожність system і private policy
-prompt-ів, ім'я response format `telegram_mobility_observation`, `strict = true` та повний
-список required properties. `prompt_hash` — SHA-256 від system prompt, фактично вибраної
-policy та канонічного JSON усього response format. Модель, джерело policy і
-runtime-параметри до hash не входять; він є fingerprint-ом завантаженого вмісту.
+Для base policy environment має пріоритет над `policy_prompt_path`; порожня
+`AI_POLICY_PROMPT` є помилкою. Для extension непорожня environment variable має пріоритет
+над `policy_prompt_extended_examples_path`, порожня variable явно вимикає extension без
+fallback, а за відсутності variable читається файл, якщо він існує. Відсутній або порожній
+extension-файл означає base-only режим і не є помилкою.
+
+Loader структурно перевіряє UTF-8/JSON, непорожність system і base policy prompt-ів, ім'я
+response format `telegram_mobility_observation`, `strict = true` та повний список required
+properties. `prompt_hash` — SHA-256 від system prompt, фактично сформованої policy (base
+плюс завантажений optional extension) та канонічного JSON усього response format. Модель,
+джерела policy й runtime-параметри до hash не входять; він є fingerprint-ом завантаженого
+вмісту.
 
 Secrets і приватні runtime variables зберігаються локально в `.env` або в Railway Variables:
 
@@ -420,14 +431,16 @@ TELEGRAM_SESSION_STRING=...
 TELEGRAM_BOT_TOKEN=...
 OPENAI_API_KEY=...
 AI_POLICY_PROMPT=<multiline private policy>
+AI_POLICY_PROMPT_EXTENDED_EXAMPLES=<optional multiline extended examples>
 LOG_LEVEL=INFO
 ```
 
 `TELEGRAM_SESSION_STRING` дає доступ рівня повноцінного Telegram-клієнта. Для monitor слід
 використовувати окрему session/auth key, не комітити `.env` і не запускати одну session у
 кількох процесах. `OPENAI_API_KEY` і `AI_POLICY_PROMPT` потрібні у Railway при ввімкненому
-observation mode. Їх перевірка не повертає й не логує значення; key, raw prompt і raw API
-response не повинні з'являтися в application logs.
+observation mode; `AI_POLICY_PROMPT_EXTENDED_EXAMPLES` опціональна. Їх перевірка не повертає
+й не логує значення; key, raw prompt і raw API response не повинні з'являтися в application
+logs.
 
 Логери OpenAI SDK, `httpx` і `httpcore` примусово обмежені рівнем `WARNING`, навіть при
 application `LOG_LEVEL=DEBUG`. Це не дозволяє SDK debug output показати request options,
@@ -485,12 +498,16 @@ Docker image:
 - запускається як непривілейований user `monitor`;
 - виконує `telegram-monitor run`.
 
-Compose передає `.env`, монтує локальні `config.toml` і `policy-prompt.txt` лише для читання,
-використовує `restart: unless-stopped` і монтує named volume `telegram-monitor-state` у
-`/app/.state`. Завдяки цьому SQLite переживає recreate container, а приватний конфіг і policy
-не копіюються в image. Railway натомість передає policy як runtime `AI_POLICY_PROMPT`.
-Output `docker compose config` не можна публікувати: Compose може розгорнути в ньому
-значення з `env_file`, включно із credentials і повною private policy.
+Compose передає `.env`, монтує локальні `config.toml` і обов'язковий `policy-prompt.txt` лише
+для читання, використовує `restart: unless-stopped` і монтує named volume
+`telegram-monitor-state` у `/app/.state`. Стандартний `compose.yaml` не монтує optional
+extension-файл; його можна передати контейнеру як
+`AI_POLICY_PROMPT_EXTENDED_EXAMPLES`. Завдяки цьому SQLite переживає recreate container, а
+приватний конфіг і обидва policy-файли не копіюються в image. Railway натомість отримує
+required base policy як runtime `AI_POLICY_PROMPT` і, за потреби, optional extension як
+`AI_POLICY_PROMPT_EXTENDED_EXAMPLES`. Output `docker compose config` не можна публікувати:
+Compose може розгорнути в ньому значення з `env_file`, включно із credentials і повною
+private policy.
 
 ## Тестування
 
@@ -512,7 +529,7 @@ Telethon events, dialogs і client lifecycle перевіряються fake-о�
 - SQLite persistence та bot isolation;
 - token-safe errors і terminal-log sanitization;
 - nested `[ai_observation]`, source context override і строгі межі значень;
-- current prompt/response-format validation, private policy env/file precedence та hash stability;
+- current prompt/response-format validation, base/extension env-file precedence та hash stability;
 - точна nullable JSON-форма AI result, бінарне рішення та толерантність optional-полів;
 - розділення `accept`/`reject` і fail-open technical statuses;
 - точні Responses API request parameters та `store = false`;

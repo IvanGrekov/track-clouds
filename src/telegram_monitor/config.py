@@ -55,7 +55,11 @@ def _load_ai_observation_config(
     _reject_unknown_keys(values, _AI_OBSERVATION_FIELDS, "ai_observation")
 
     default_config = AIObservationConfig()
-    for field_name in ("prompt_bundle_path", "policy_prompt_path"):
+    for field_name in (
+        "prompt_bundle_path",
+        "policy_prompt_path",
+        "policy_prompt_extended_examples_path",
+    ):
         configured_path = values.get(field_name, getattr(default_config, field_name))
         if isinstance(configured_path, str):
             if not configured_path.strip():

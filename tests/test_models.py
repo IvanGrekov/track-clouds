@@ -16,6 +16,9 @@ def test_ai_observation_defaults_to_disabled() -> None:
     assert config.enabled is False
     assert str(config.prompt_bundle_path) == "prompts"
     assert str(config.policy_prompt_path) == "policy-prompt.txt"
+    assert str(config.policy_prompt_extended_examples_path) == (
+        "policy-prompt-extended-examples.txt"
+    )
     assert config.operation_timeout_seconds == 30.0
 
 
@@ -24,6 +27,7 @@ def test_ai_observation_normalizes_strings_paths_and_numbers() -> None:
         model="  test-model  ",
         prompt_bundle_path="  prompts  ",
         policy_prompt_path="  private/policy-prompt.txt  ",
+        policy_prompt_extended_examples_path="  private/extended-examples.txt  ",
         default_trusted_area_context="  Львів  ",
         operation_timeout_seconds=20,
         retry_base_seconds=1,
@@ -33,10 +37,26 @@ def test_ai_observation_normalizes_strings_paths_and_numbers() -> None:
     assert config.model == "test-model"
     assert str(config.prompt_bundle_path) == "prompts"
     assert str(config.policy_prompt_path) == "private/policy-prompt.txt"
+    assert str(config.policy_prompt_extended_examples_path) == ("private/extended-examples.txt")
     assert config.default_trusted_area_context == "Львів"
     assert config.operation_timeout_seconds == 20.0
     assert config.retry_base_seconds == 1.0
     assert config.retry_max_seconds == 3.0
+
+
+def test_ai_observation_preserves_existing_positional_argument_order() -> None:
+    config = AIObservationConfig(
+        False,
+        "test-model",
+        "prompts",
+        "private/policy-prompt.txt",
+        "Львів",
+    )
+
+    assert config.default_trusted_area_context == "Львів"
+    assert str(config.policy_prompt_extended_examples_path) == (
+        "policy-prompt-extended-examples.txt"
+    )
 
 
 @pytest.mark.parametrize(
@@ -47,6 +67,14 @@ def test_ai_observation_normalizes_strings_paths_and_numbers() -> None:
         ({"prompt_bundle_path": "  "}, "prompt_bundle_path"),
         ({"policy_prompt_path": "  "}, "policy_prompt_path"),
         ({"policy_prompt_path": 42}, "policy_prompt_path"),
+        (
+            {"policy_prompt_extended_examples_path": "  "},
+            "policy_prompt_extended_examples_path",
+        ),
+        (
+            {"policy_prompt_extended_examples_path": 42},
+            "policy_prompt_extended_examples_path",
+        ),
         ({"default_trusted_area_context": 1}, "default_trusted_area_context"),
         ({"operation_timeout_seconds": 0}, "operation_timeout_seconds"),
         ({"operation_timeout_seconds": 30.1}, "operation_timeout_seconds"),

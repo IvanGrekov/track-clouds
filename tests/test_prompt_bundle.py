@@ -13,6 +13,7 @@ from telegram_monitor.config import load_config
 from telegram_monitor.models import AIObservationConfig, ConfigurationError
 from telegram_monitor.prompt_bundle import (
     AI_POLICY_PROMPT_ENV,
+    AI_POLICY_PROMPT_EXTENDED_EXAMPLES_ENV,
     load_prompt_bundle,
     prepare_ai_observation,
 )
@@ -21,6 +22,7 @@ from telegram_monitor.prompt_bundle import (
 @pytest.fixture(autouse=True)
 def _isolate_policy_prompt_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(AI_POLICY_PROMPT_ENV, raising=False)
+    monkeypatch.delenv(AI_POLICY_PROMPT_EXTENDED_EXAMPLES_ENV, raising=False)
 
 
 def _valid_response_format() -> dict[str, object]:
@@ -60,6 +62,7 @@ def _write_bundle(
     *,
     system_prompt: str = "Classify the untrusted message.",
     policy_prompt: str | None = None,
+    extended_policy_prompt: str | None = None,
     response_format: object | None = None,
 ) -> None:
     path.mkdir(parents=True)
@@ -68,6 +71,11 @@ def _write_bundle(
         policy_prompt or "Test policy.",
         encoding="utf-8",
     )
+    if extended_policy_prompt is not None:
+        _extended_policy_path(path).write_text(
+            extended_policy_prompt,
+            encoding="utf-8",
+        )
     (path / "response-format.json").write_text(
         json.dumps(
             response_format if response_format is not None else _valid_response_format(),
@@ -81,15 +89,23 @@ def _policy_path(bundle_path: Path) -> Path:
     return bundle_path.with_name(f"{bundle_path.name}-policy-prompt.txt")
 
 
+def _extended_policy_path(bundle_path: Path) -> Path:
+    return bundle_path.with_name(f"{bundle_path.name}-extended-policy-prompt.txt")
+
+
 def _config(
     path: Path,
     *,
     policy_prompt_path: Path | None = None,
+    policy_prompt_extended_examples_path: Path | None = None,
 ) -> AIObservationConfig:
     return AIObservationConfig(
         enabled=True,
         prompt_bundle_path=path,
         policy_prompt_path=policy_prompt_path or _policy_path(path),
+        policy_prompt_extended_examples_path=(
+            policy_prompt_extended_examples_path or _extended_policy_path(path)
+        ),
     )
 
 
@@ -111,16 +127,19 @@ def test_load_prompt_bundle_returns_validated_content_and_hash(tmp_path: Path) -
 def test_prompt_bundle_repr_does_not_expose_prompt_content(tmp_path: Path) -> None:
     bundle_path = tmp_path / "prompts"
     private_marker = "PRIVATE-POLICY-MARKER"
+    extended_private_marker = "PRIVATE-EXTENDED-POLICY-MARKER"
     system_marker = "SYSTEM-PROMPT-MARKER"
     _write_bundle(
         bundle_path,
         system_prompt=system_marker,
         policy_prompt=private_marker,
+        extended_policy_prompt=extended_private_marker,
     )
 
     bundle_repr = repr(load_prompt_bundle(_config(bundle_path)))
 
     assert private_marker not in bundle_repr
+    assert extended_private_marker not in bundle_repr
     assert system_marker not in bundle_repr
 
 
@@ -133,6 +152,7 @@ def test_repository_prompt_bundle_is_valid_with_environment_policy(
         AI_POLICY_PROMPT_ENV,
         "Private test policy.",
     )
+    monkeypatch.setenv(AI_POLICY_PROMPT_EXTENDED_EXAMPLES_ENV, "")
 
     bundle = load_prompt_bundle(config.ai_observation)
 
@@ -216,6 +236,100 @@ def test_policy_hash_changes_when_environment_content_changes(
     )
 
     assert load_prompt_bundle(_config(bundle_path)).prompt_hash != file_hash
+
+
+def test_extended_examples_file_is_appended_after_base_policy(tmp_path: Path) -> None:
+    bundle_path = tmp_path / "bundle"
+    _write_bundle(
+        bundle_path,
+        policy_prompt="Base policy.\r\n",
+        extended_policy_prompt="Extended examples.\r\n\r\n",
+    )
+
+    bundle = load_prompt_bundle(_config(bundle_path))
+
+    assert bundle.policy_prompt == "Base policy.\n\nExtended examples.\n"
+
+
+def test_environment_extended_examples_take_precedence_over_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    _write_bundle(
+        bundle_path,
+        policy_prompt="Base policy from file.",
+        extended_policy_prompt="Examples from file.",
+    )
+    monkeypatch.setenv(AI_POLICY_PROMPT_ENV, "Base policy from Railway.")
+    monkeypatch.setenv(
+        AI_POLICY_PROMPT_EXTENDED_EXAMPLES_ENV,
+        "Examples from Railway.\r\n",
+    )
+
+    bundle = load_prompt_bundle(_config(bundle_path))
+
+    assert bundle.policy_prompt == "Base policy from Railway.\n\nExamples from Railway.\n"
+
+
+def test_blank_environment_extended_examples_disable_configured_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    _write_bundle(
+        bundle_path,
+        extended_policy_prompt="Examples from file.",
+    )
+    monkeypatch.setenv(AI_POLICY_PROMPT_EXTENDED_EXAMPLES_ENV, " \n\t")
+
+    bundle = load_prompt_bundle(_config(bundle_path))
+
+    assert bundle.policy_prompt == "Test policy.\n"
+
+
+def test_blank_extended_examples_file_is_ignored(tmp_path: Path) -> None:
+    bundle_path = tmp_path / "bundle"
+    _write_bundle(
+        bundle_path,
+        extended_policy_prompt=" \n\t",
+    )
+
+    bundle = load_prompt_bundle(_config(bundle_path))
+
+    assert bundle.policy_prompt == "Test policy.\n"
+
+
+def test_prompt_hash_changes_with_extended_examples(tmp_path: Path) -> None:
+    bundle_path = tmp_path / "bundle"
+    _write_bundle(bundle_path)
+    base_only_hash = load_prompt_bundle(_config(bundle_path)).prompt_hash
+    _extended_policy_path(bundle_path).write_text(
+        "Any nonblank extended examples.",
+        encoding="utf-8",
+    )
+
+    extended_hash = load_prompt_bundle(_config(bundle_path)).prompt_hash
+
+    assert extended_hash != base_only_hash
+
+
+def test_extended_examples_hash_matches_for_equivalent_file_and_environment_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    _write_bundle(
+        bundle_path,
+        extended_policy_prompt="Extended examples.",
+    )
+    file_hash = load_prompt_bundle(_config(bundle_path)).prompt_hash
+    monkeypatch.setenv(
+        AI_POLICY_PROMPT_EXTENDED_EXAMPLES_ENV,
+        "Extended examples.\r\n\r\n",
+    )
+
+    assert load_prompt_bundle(_config(bundle_path)).prompt_hash == file_hash
 
 
 def test_policy_prompt_does_not_require_a_version_header(
@@ -308,6 +422,7 @@ def test_prompt_hash_excludes_model_and_runtime_settings(tmp_path: Path) -> None
         model="different-model",
         prompt_bundle_path=bundle_path,
         policy_prompt_path=_policy_path(bundle_path),
+        policy_prompt_extended_examples_path=_extended_policy_path(bundle_path),
         operation_timeout_seconds=20,
         request_attempts=3,
         retry_base_seconds=1,
@@ -533,6 +648,29 @@ def test_load_prompt_bundle_rejects_non_utf8_private_policy(tmp_path: Path) -> N
     _policy_path(bundle_path).write_bytes(b"\xff\xfe")
 
     with pytest.raises(ConfigurationError, match="UTF-8|policy prompt"):
+        load_prompt_bundle(_config(bundle_path))
+
+
+def test_load_prompt_bundle_rejects_non_utf8_extended_examples_without_exposing_content(
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "bundle"
+    _write_bundle(bundle_path)
+    private_marker = "PRIVATE-EXTENDED-POLICY-MARKER"
+    _extended_policy_path(bundle_path).write_bytes(private_marker.encode() + b"\xff")
+
+    with pytest.raises(ConfigurationError, match="UTF-8") as caught:
+        load_prompt_bundle(_config(bundle_path))
+
+    assert private_marker not in str(caught.value)
+
+
+def test_load_prompt_bundle_rejects_extended_examples_directory(tmp_path: Path) -> None:
+    bundle_path = tmp_path / "bundle"
+    _write_bundle(bundle_path)
+    _extended_policy_path(bundle_path).mkdir()
+
+    with pytest.raises(ConfigurationError, match="Cannot read.*extended policy examples"):
         load_prompt_bundle(_config(bundle_path))
 
 
