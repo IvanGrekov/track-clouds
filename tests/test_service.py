@@ -14,7 +14,6 @@ from telegram_monitor.ai_models import (
     AIObservationResult,
     AIObservationTechnicalStatus,
     AIReasonCode,
-    AITemporalRelevance,
 )
 from telegram_monitor.ai_observer import AIObservationReport
 from telegram_monitor.models import AIObservationConfig, MessageSnapshot, MonitorConfig, SourceRule
@@ -144,9 +143,6 @@ def _success_report(*, token_usage: AIObservationTokenUsage | None = None) -> AI
             decision=AIDecision.ACCEPT,
             location="Городоцька, біля цирку",
             event="перекрита права смуга",
-            temporal_relevance=AITemporalRelevance.CURRENT,
-            reason_code=AIReasonCode.MEETS_ALL_CRITERIA,
-            reason="Є актуальне обмеження руху та достатньо конкретна локація.",
         ),
         status=None,
         model="gpt-5.4-nano-2026-03-17",
@@ -506,7 +502,7 @@ async def test_observes_once_and_reuses_rendered_alert_for_delivery_retry() -> N
     assert notifier.calls == 2
     assert notifier.attempted == [notifier.sent[0], notifier.sent[0]]
     assert len(notifier.sent) == 1
-    assert "AI review:" in notifier.sent[0]
+    assert "AI analysis:" in notifier.sent[0]
     assert "Source: Discussion\nTime:" in notifier.sent[0]
     assert "Decision: accept" in notifier.sent[0]
     assert "Model:" not in notifier.sent[0]
@@ -582,7 +578,7 @@ async def test_technical_observation_is_delivered_and_next_message_is_processed(
 
 
 @pytest.mark.asyncio
-async def test_invalid_ai_response_is_logged_but_not_added_to_telegram(
+async def test_raw_invalid_ai_output_is_logged_but_not_added_to_telegram(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     discussion_id = -1001111111111
@@ -592,7 +588,7 @@ async def test_invalid_ai_response_is_logged_but_not_added_to_telegram(
         timezone="UTC",
         ai_observation=AIObservationConfig(enabled=True),
     )
-    response_text = '{"decision":"accept",\n"unexpected":"field"}'
+    response_text = '{"location":"Стрийська",\n"unexpected":"field"}'
     notifier = FakeNotifier()
     observer = FakeObserver(
         [
@@ -612,12 +608,12 @@ async def test_invalid_ai_response_is_logged_but_not_added_to_telegram(
     assert len(notifier.sent) == 1
     assert "Status: invalid_response" in notifier.sent[0]
     assert "unexpected" not in notifier.sent[0]
-    assert 'ai_response={"decision":"accept", "unexpected":"field"}' in caplog.text
+    assert 'ai_response={"location":"Стрийська", "unexpected":"field"}' in caplog.text
     await monitor.close()
 
 
 @pytest.mark.asyncio
-async def test_reject_and_review_observations_do_not_change_delivery() -> None:
+async def test_reject_and_accept_are_both_delivered() -> None:
     discussion_id = -1001111111111
     client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])
     config = MonitorConfig(
@@ -627,33 +623,33 @@ async def test_reject_and_review_observations_do_not_change_delivery() -> None:
     )
     reject = AIObservationResult(
         decision=AIDecision.REJECT,
-        location=None,
-        event="особиста думка",
-        temporal_relevance=AITemporalRelevance.CURRENT,
         reason_code=AIReasonCode.ONLY_OPINION_OR_EMOTION,
         reason="Немає корисного фактичного повідомлення про маршрут.",
     )
-    review = AIObservationResult(
-        decision=AIDecision.REVIEW,
+    accept = AIObservationResult(
+        decision=AIDecision.ACCEPT,
         location="Стрийська",
         event="можлива перешкода",
-        temporal_relevance=AITemporalRelevance.UNCLEAR,
-        reason_code=AIReasonCode.AMBIGUOUS_RECENCY,
-        reason="Часова актуальність повідомлення неоднозначна.",
     )
     notifier = FakeNotifier()
-    observer = FakeObserver([_semantic_report(reject), _semantic_report(review)])
+    observer = FakeObserver([_semantic_report(reject), _semantic_report(accept)])
     monitor = TelegramMonitor(client, config, notifier, ai_observer=observer)
     await monitor.prepare()
 
-    await monitor.handle_event(FakeEvent(discussion_id, 56, "k8s перше повідомлення"))
+    rejected_event = FakeEvent(discussion_id, 56, "k8s перше повідомлення")
+    await monitor.handle_event(rejected_event)
     await monitor.handle_event(FakeEvent(discussion_id, 57, "k8s друге повідомлення"))
+    await monitor._queue.join()
+    await monitor.handle_event(rejected_event)
     await monitor._queue.join()
 
     assert len(observer.calls) == 2
     assert len(notifier.sent) == 2
     assert "Decision: reject" in notifier.sent[0]
-    assert "Decision: review" in notifier.sent[1]
+    assert "Reason code: only_opinion_or_emotion" in notifier.sent[0]
+    assert "перше повідомлення" in notifier.sent[0]
+    assert "Decision: accept" in notifier.sent[1]
+    assert "Стрийська" in notifier.sent[1]
     await monitor.close()
 
 

@@ -8,7 +8,6 @@ import pytest
 from telegram_monitor.ai_models import (
     AIDecision,
     AIReasonCode,
-    AITemporalRelevance,
 )
 from telegram_monitor.config import load_config
 from telegram_monitor.models import AIObservationConfig, ConfigurationError
@@ -36,7 +35,6 @@ def _valid_response_format() -> dict[str, object]:
                 "decision",
                 "location",
                 "event",
-                "temporal_relevance",
                 "reason_code",
                 "reason",
             ],
@@ -47,15 +45,11 @@ def _valid_response_format() -> dict[str, object]:
                 },
                 "location": {"type": ["string", "null"]},
                 "event": {"type": ["string", "null"]},
-                "temporal_relevance": {
-                    "type": "string",
-                    "enum": [value.value for value in AITemporalRelevance],
-                },
                 "reason_code": {
-                    "type": "string",
-                    "enum": [value.value for value in AIReasonCode],
+                    "type": ["string", "null"],
+                    "enum": [*[value.value for value in AIReasonCode], None],
                 },
-                "reason": {"type": "string"},
+                "reason": {"type": ["string", "null"]},
             },
         },
     }
@@ -149,9 +143,14 @@ def test_repository_prompt_bundle_is_valid_with_environment_policy(
     assert isinstance(schema, dict)
     properties = schema["properties"]
     assert isinstance(properties, dict)
+    assert set(schema["required"]) == set(properties)
+    assert "temporal_relevance" not in properties
+    decision = properties["decision"]
+    assert isinstance(decision, dict)
+    assert decision["enum"] == [decision.value for decision in AIDecision]
     reason_code = properties["reason_code"]
     assert isinstance(reason_code, dict)
-    assert reason_code["enum"] == [reason.value for reason in AIReasonCode]
+    assert reason_code["enum"] == [*[reason.value for reason in AIReasonCode], None]
 
 
 def test_environment_policy_takes_precedence_over_configured_file(
@@ -474,7 +473,7 @@ def test_load_prompt_bundle_rejects_schema_drift_from_typed_contract(tmp_path: P
         load_prompt_bundle(_config(bundle_path))
 
 
-def test_load_prompt_bundle_requires_notify_all_source_reason_code(tmp_path: Path) -> None:
+def test_load_prompt_bundle_rejects_non_reject_reason_code(tmp_path: Path) -> None:
     bundle_path = tmp_path / "bundle"
     response_format = _valid_response_format()
     schema = response_format["schema"]
@@ -483,9 +482,7 @@ def test_load_prompt_bundle_requires_notify_all_source_reason_code(tmp_path: Pat
     assert isinstance(properties, dict)
     reason_code = properties["reason_code"]
     assert isinstance(reason_code, dict)
-    reason_code["enum"] = [
-        value for value in reason_code["enum"] if value != AIReasonCode.NOTIFY_ALL_SOURCE.value
-    ]
+    reason_code["enum"].insert(-1, "notify_all_source")
     _write_bundle(bundle_path, response_format=response_format)
 
     with pytest.raises(ConfigurationError, match="typed AI response contract"):

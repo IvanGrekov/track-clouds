@@ -13,7 +13,6 @@ from .ai_models import (
     AI_RESPONSE_FIELDS,
     AIDecision,
     AIReasonCode,
-    AITemporalRelevance,
 )
 from .credentials import validate_openai_api_key
 from .models import AIObservationConfig, ConfigurationError
@@ -159,17 +158,11 @@ def _validate_response_format(response_format: dict[str, Any]) -> None:
         },
         "location": {"type": ["string", "null"]},
         "event": {"type": ["string", "null"]},
-        "temporal_relevance": {
-            "type": "string",
-            "enum": [value.value for value in AITemporalRelevance],
-        },
         "reason_code": {
-            "type": "string",
-            "enum": [reason.value for reason in AIReasonCode],
+            "type": ["string", "null"],
+            "enum": [reason.value for reason in AIReasonCode] + [None],
         },
-        # ``maxLength`` is not supported by the Responses Structured Outputs
-        # subset. The local typed parser still enforces its 350-character cap.
-        "reason": {"type": "string"},
+        "reason": {"type": ["string", "null"]},
     }
     if properties != expected_properties:
         raise ConfigurationError(

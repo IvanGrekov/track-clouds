@@ -12,8 +12,6 @@ from telegram_monitor.ai_models import (
     AIDecision,
     AIObservationResult,
     AIObservationTechnicalStatus,
-    AIReasonCode,
-    AITemporalRelevance,
 )
 from telegram_monitor.ai_observer import (
     AIObservationReport,
@@ -61,9 +59,6 @@ def _result() -> AIObservationResult:
         decision=AIDecision.ACCEPT,
         location="Городоцька",
         event="перекрита смуга",
-        temporal_relevance=AITemporalRelevance.CURRENT,
-        reason_code=AIReasonCode.MEETS_ALL_CRITERIA,
-        reason="Є актуальна подія та конкретна локація.",
     )
 
 

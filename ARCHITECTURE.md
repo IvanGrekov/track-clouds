@@ -7,8 +7,9 @@ Telegram Keyword Monitor — це окремий event-driven Python-серві�
 1. входить у Telegram як звичайний користувач;
 2. слухає нові повідомлення тільки в налаштованих каналах і чатах;
 3. застосовує keyword-фільтри або правило `notify_all=True`;
-4. формує короткий alert із посиланням на оригінальне повідомлення;
-5. надсилає alert у Saved Messages або всім користувачам, які підписалися на окремого бота.
+4. за потреби класифікує повідомлення через AI як `accept` або `reject`;
+5. формує короткий alert із посиланням на оригінальне повідомлення;
+6. надсилає alert у Saved Messages або всім користувачам, які підписалися на окремого бота.
 
 Права адміністратора в monitored-чатах не потрібні. User-session бачить ті самі діалоги, що
 й відповідний Telegram-акаунт.
@@ -52,6 +53,8 @@ flowchart LR
     DEDUP["In-memory deduplication<br/>(chat_id, message_id)"]
     QUEUE["Bounded asyncio queue"]
     WORKER["Notification worker"]
+    AI["Binary AI observation<br/>ACCEPT / REJECT"]
+    ALERT["Render alert"]
     SAVED["Saved Messages"]
     BOT["TelegramBotNotifier"]
     API["Telegram Bot API"]
@@ -64,8 +67,12 @@ flowchart LR
     MATCH -->|"matched / notify_all"| DEDUP
     DEDUP --> QUEUE
     QUEUE --> WORKER
-    WORKER -->|"saved_messages mode"| SAVED
-    WORKER -->|"bot mode"| BOT
+    WORKER -->|"AI disabled"| ALERT
+    WORKER -->|"AI enabled"| AI
+    AI -->|"ACCEPT / REJECT"| ALERT
+    AI -->|"technical failure: fail-open"| ALERT
+    ALERT -->|"saved_messages mode"| SAVED
+    ALERT -->|"bot mode"| BOT
     BOT --> API
     API --> PEOPLE
     API -->|"getUpdates: /start, /stop"| BOT
@@ -80,7 +87,7 @@ flowchart LR
 | [`models.py`](src/telegram_monitor/models.py) | Dataclass-моделі та валідація конфігурації |
 | [`credentials.py`](src/telegram_monitor/credentials.py) | Безпечне читання Telegram credentials і перевірка наявності OpenAI key |
 | [`prompt_bundle.py`](src/telegram_monitor/prompt_bundle.py) | Валідація поточного prompt bundle та обчислення `prompt_hash` |
-| [`ai_models.py`](src/telegram_monitor/ai_models.py) | Typed semantic result, technical-status enum і строгий parser AI-відповіді |
+| [`ai_models.py`](src/telegram_monitor/ai_models.py) | Typed binary result, technical-status enum і parser AI-відповіді |
 | [`openai_client.py`](src/telegram_monitor/openai_client.py) | Ізольований AsyncOpenAI Responses client, timeout/retry policy і normalized outcome |
 | [`ai_observer.py`](src/telegram_monitor/ai_observer.py) | Спільний end-to-end deadline та fail-open observation report |
 | [`client.py`](src/telegram_monitor/client.py) | Створення Telethon client із `StringSession`, reconnect і catch-up |
@@ -110,58 +117,56 @@ flowchart LR
    - Saved Messages mode не потребує окремого background task;
    - bot mode викликає `getMe`, перевіряє відсутність webhook і запускає `getUpdates` polling.
 10. Запускається notification worker і обробляється bounded startup buffer.
-11. Worker для кожного accepted job виконує один logical AI observation, формує один alert
-    і передає незмінний рядок у Telegram delivery retries.
+11. Worker для кожного accepted queue job виконує один logical AI observation. `accept` і
+    `reject` формують та доставляють по одному alert із decision-specific полями, а технічний
+    failure пропускає повідомлення далі за fail-open правилом.
 12. Основна coroutine чекає відключення Telethon до сигналу або фатальної помилки bot polling.
 
 ## Контракт AI-відповіді
 
 `prompts/response-format.json` містить поточний об'єкт `text.format` для
 Responses API з `type = "json_schema"`, `name = "telegram_mobility_observation"`,
-`strict = true` і root schema з
-`additionalProperties = false`. Усі поля є required; nullable `location` та `event`
-передаються як `null`, а не пропускаються. Цей JSON-файл є source of truth для wire format,
-а відповідність Python enums і моделі йому перевіряють loader та контрактні тести. Додатковий
-локальний parser окремо обмежує `reason` до 350 символів, оскільки `maxLength` не входить до
-використаного Structured Outputs subset.
+`strict = true` і root schema з `additionalProperties = false`. Відповідно до вимог
+[strict Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs)
+усі properties object перелічені в `required`. Тому raw wire object
+завжди має ключі `decision`, `location`, `event`, `reason_code` і `reason`, але останні
+чотири properties є nullable. Значення `null` представляє логічно optional поле, яке не
+стосується поточного рішення. `prompts/response-format.json` є source of truth для цього
+wire format, а loader і контрактні тести перевіряють його відповідність typed model.
 
 Семантична відповідь моделюється frozen dataclass `AIObservationResult` із полями:
 
-- `decision`: `accept`, `reject` або `review`;
-- `location` і `event`: нормалізовані фрагменти або `null`;
-- `temporal_relevance`: `current`, `historical` або `unclear`;
-- `reason_code` та короткий `reason`.
+- `decision`: обов'язковий `accept` або `reject`;
+- `location` і `event`: optional нормалізовані фрагменти для `accept`;
+- `reason_code` та короткий `reason`: optional пояснення для `reject`.
 
-Semantic contract є категоріальним: strict response schema і typed result фіксують
-`decision`, а location/event, temporal relevance, `reason_code` і `reason` надають
-пояснювальний контекст. Telegram formatter і manual CLI використовують цей набір, а
-application logs залишають лише `decision`, `reason_code` та безпечні metadata.
+Conditional semantics не перетворюються на локальну cross-field валідацію. Відсутні,
+неочікувано заповнені або неузгоджені `location`, `event`, `reason_code` чи `reason` не
+змінюють валідний `decision` на `invalid_response`; застосунок трактує ці поля як optional. `reason_code`
+містить лише reject-причини: `spam_or_scam`, `unrelated_content`,
+`only_opinion_or_emotion` або `political_commentary`.
 
 Важливі semantic mappings:
 
-- `prefilter.notify_all = true` завжди дає `decision = "accept"` і
-  `reason_code = "notify_all_source"`; `location` береться лише з тексту або
-  `trusted_area_context`, `event` — лише з тексту, обидва поля можуть бути `null`,
-  а `temporal_relevance` фактично залишається
-  `current`, `historical` або `unclear`;
-- `notify_all_source` дозволений лише з `prefilter.notify_all = true`; коли flag має
-  значення `false`, звичайний `accept` вимагає `meets_all_criteria`, `current` і
-  непорожні `location` та `event`;
-- `unrelated_content` є лише reject-причиною і поєднується з `decision = "reject"`;
-- `no_location` і `no_event` можуть супроводжувати `review`, якщо повідомлення
-  потенційно корисне, але йому бракує цього контексту; коли відсутній компонент
-  однозначно робить текст некорисним, вони поєднуються з `reject`;
-- `historical_context` завжди означає `decision = "review"` разом із
-  `temporal_relevance = "historical"`.
+- для звичайного keyword path модель перевіряє лише наявність явного reject-критерію з
+  private policy. Якщо такого критерію немає, рішення за замовчуванням — `accept`;
+- неповна, неоднозначна або історична, але потенційно корисна інформація приймається;
+- `notify_all_source` є назвою окремого правила, а не `reason_code`: для
+  `prefilter.notify_all = true` воно завжди дає `decision = "accept"`; `reason_code` і
+  `reason` залишаються `null`, а `location` та `event` заповнюються лише коли їх можна
+  безпечно вилучити з дозволених вхідних даних;
+- `accept` і `reject` передаються formatter-у та продовжують Telegram delivery; цей
+  observation mode дає змогу оцінити якість класифікації на реальному потоці.
 
 `parse_ai_observation_response()` виконує локальну перевірку навіть після strict Structured
-Output: JSON decode, точний набір і типи полів, enum/range/length обмеження та semantic
-consistency між рішенням, `reason_code`, локацією, подією і часовою релевантністю.
-Некоректний payload завершується `AIResponseValidationError` і не перетворюється на `review`.
+Output: JSON decode, JSON object та обов'язкове бінарне `decision`. Для
+`prefilter.notify_all = true` єдина додаткова вимога до рішення — `accept`. Некоректний JSON,
+не-object payload, відсутнє/невідоме рішення або `reject` у notify-all path завершується
+`AIResponseValidationError`. Проблема лише в optional полях не є invalid response.
 
 Технічний результат представлений окремим enum `AIObservationTechnicalStatus`: `timeout`,
-`rate_limited`, `refusal`, `api_error` або `invalid_response`. Тому
-transport/API failure неможливо переплутати із семантичним `review`.
+`rate_limited`, `refusal`, `api_error` або `invalid_response`. Жоден із цих статусів не є
+семантичним `reject`: production pipeline працює fail-open і продовжує Telegram delivery.
 
 ## Ізольований OpenAI client
 
@@ -180,25 +185,25 @@ JSON-вхід, configured model, reasoning effort, `max_output_tokens`, `store` 
   додаткових retries;
 - автоматичні retries OpenAI SDK вимкнені; bounded exponential backoff виконує сам client;
 - один переданий caller-ом timeout budget включає HTTP attempts, retry sleeps, parsing і
-  semantic validation; кожен retry не отримує новий повний timeout;
+  перевірку `decision`; кожен retry не отримує новий повний timeout;
 - retry дозволений лише для тимчасових connection/server помилок і справжнього throttling;
 - `store = false` не залишає response для подальшого отримання через OpenAI API;
 - створення SDK client-а не робить live API probe.
 
 Client outcome повертає `api_latency_seconds`: тривалість усього ізольованого
-classification client cycle, включно з HTTP attempts, retries, backoff, parsing і semantic
-validation. Observation report додає `elapsed_seconds` — повну тривалість
+classification client cycle, включно з HTTP attempts, retries, backoff, parsing і перевіркою
+рішення. Observation report додає `elapsed_seconds` — повну тривалість
 observation поточного повідомлення від його початку до готового результату, а також
 optional `api_latency_seconds`. Обидва поля вимірюються в секундах;
 зовнішні timing-поля не використовують мілісекунди.
 
 Явний Structured Outputs refusal нормалізується як `refusal` до запуску JSON parser-а.
-Incomplete через content filter стає `refusal`; інший неповний, порожній, malformed або
-семантично неузгоджений output стає `invalid_response`. Вичерпаний budget дає `timeout`,
-справжній rate limit — `rate_limited`, а решта API/transport failures — `api_error`.
-Billing/quota errors не повторюються. Помилки локальної AI-підготовки observer factory
-нормалізує fail-open як `api_error` до Telegram-доставки. Жоден із цих станів не стає
-`review`.
+Incomplete через content filter стає `refusal`; інший неповний, порожній, malformed output
+або output без валідного `decision` стає `invalid_response`. Optional-поля не переводять
+відповідь у цей статус. Вичерпаний budget дає `timeout`, справжній rate limit —
+`rate_limited`, а решта API/transport failures — `api_error`. Billing/quota errors не
+повторюються. Помилки локальної AI-підготовки observer factory нормалізує як `api_error`.
+Усі technical statuses є fail-open до Telegram-доставки.
 
 Зовнішнє скасування coroutine не маскується як технічний AI-статус, щоб graceful shutdown
 залишався працездатним.
@@ -230,12 +235,14 @@ CLI
 Telegram alert і не змінює persistent state. Manual command перевіряє OpenAI integration,
 а не production Telegram pipeline.
 
-Semantic `accept`, `reject` і `review` є успішними відповідями з exit code `0`.
+Semantic `accept` і `reject` є успішними відповідями з exit code `0`.
 Configuration/usage failures повертають `2`, normalized technical results — `3`,
 а user interruption — `130`. Для semantic/technical outcome stdout містить рівно один
 JSON object; logs і diagnostics належать stderr. Output не включає API key, raw prompts,
 raw API response, raw exception або окрему копію input envelope. Нормалізовані модельні
-поля `location`, `event` і `reason` можуть містити фрагменти input text. Result metadata
+поля `location`, `event` і `reason` можуть містити фрагменти input text, якщо вони заповнені.
+CLI serializer пропускає auxiliary keys із відсутніми значеннями: `accept` повертає
+`location`/`event`, а `reject` — `reason_code`/`reason`, коли вони наявні. Result metadata
 містить `api_latency_seconds`, а не millisecond-поле.
 
 ## Обробка нового повідомлення
@@ -271,13 +278,13 @@ raw API response, raw exception або окрему копію input envelope. �
 13. Job без блокуючих network calls додається в bounded `asyncio.Queue`.
 14. Один background worker починає спільний deadline до 30 секунд і передає залишок budget
     ізольованому OpenAI client-у.
-15. Семантичний або технічний observation report передається `render_notification()`, який
-    створює один plain-text alert до Telegram limit 4096 символів. Успішний AI-блок містить
-    `Decision`, `Location`, `Event`, `Relevance`, `Code reason`, `Reason` і
-    `Delay` у секундах з трьома знаками після крапки, наприклад `Delay: 0.842 s`;
-    це повний `elapsed_seconds` observation. Технічний блок містить лише `Status` і
-    `Description`.
-16. Dedup key commit-иться до Telegram transport retries. Усі retries і bot subscribers
+15. `accept` і `reject` передаються `render_notification()`, який створює один plain-text
+    alert до Telegram limit 4096 символів. Блок `AI analysis:` містить `Decision`, `Delay`
+    у секундах і наявні поля відповідного рішення: `Location`/`Event` для `accept` або
+    `Reason code`/`Reason` для `reject`.
+16. Technical status також передається formatter-у за fail-open правилом; його блок містить
+    лише `Status` і `Description`, а вихідне повідомлення все одно доставляється.
+17. Dedup key commit-иться до Telegram transport retries. Усі retries і bot subscribers
     отримують той самий вже сформований рядок та не запускають AI повторно.
 
 Під час shutdown monitor перестає приймати events і чекає queue протягом одного повного AI
@@ -444,7 +451,8 @@ Removed user (..., reason=unreachable)
 Bot alert broadcast started (total=N)
 Bot alert delivered to N/N subscriber(s)
 Bot alert delivery incomplete (status=partial|failed, delivered=N, failed=N, ...)
-AI observation completed (decision=..., reason_code=..., ...)
+AI observation completed (decision=accept, ...)
+AI observation completed (decision=reject, reason_code=..., ...)
 AI observation failed (status=..., model=..., message=chat/message, elapsed_seconds=..., ...)
 AI observation failed (status=invalid_response, ..., ai_response=...)
 ```
@@ -455,7 +463,10 @@ Retryable Bot API delivery errors записуються як `WARNING` з `chat
 Bot API request payload та token у ці delivery-логи не додаються.
 
 AI logs не містять message text, location, event, reason, refusal, exception, prompt або
-API key. Для `invalid_response` error log містить однорядковий, обмежений за довжиною
+API key. Семантичний log завжди містить `decision`; reject-only `reason_code` додається,
+коли він наявний. Після `accept` і `reject` notifier викликається однаково, тому за успішної
+відправки далі з'являється звичайний delivery log.
+Для `invalid_response` error log містить однорядковий, обмежений за довжиною
 `ai_response`, щоб зберегти невалідний model output для діагностики. Неочікувана
 observer-помилка також спочатку нормалізується до `api_error`, а вже потім записується без
 traceback чи raw exception text.
@@ -502,20 +513,21 @@ Telethon events, dialogs і client lifecycle перевіряються fake-о�
 - token-safe errors і terminal-log sanitization;
 - nested `[ai_observation]`, source context override і строгі межі значень;
 - current prompt/response-format validation, private policy env/file precedence та hash stability;
-- точна JSON-форма AI result, enum/range/length limits і semantic consistency;
-- розділення semantic decisions і technical statuses;
+- точна nullable JSON-форма AI result, бінарне рішення та толерантність optional-полів;
+- розділення `accept`/`reject` і fail-open technical statuses;
 - точні Responses API request parameters та `store = false`;
 - total-attempt semantics, bounded backoff і один caller-supplied timeout budget;
 - refusal, rate limit, quota, timeout, API і invalid-response normalization;
 - observer timeout, cancellation і спільний 30-секундний deadline;
 - один logical observation попри duplicate updates і Telegram delivery retries;
-- AI formatter labels, technical descriptions та Telegram limit 4096;
+- delivery після `accept`, `reject` або technical failure і decision-specific AI-поля alert;
+- AI formatter labels, conditional fields, technical descriptions та Telegram limit 4096;
 - fail-open observer setup і коректне закриття lifecycle resources;
 - відсутність live API probe під час створення client-а;
 - перевірка API key без витоку secret у результат або exception;
 - `ai-check` без `--live` не читає config/AI resources і не створює client;
-- `ai-check` формує точний request з positional/stdin input, нормалізує всі
-  semantic/technical outcomes, закриває client і не створює Telegram components;
+- `ai-check` формує точний request з positional/stdin input, нормалізує binary/technical
+  outcomes, закриває client і не створює Telegram components;
 - CLI stdout для result залишається одним валідним JSON object, а serializer не додає
   raw secrets, prompts, responses, exceptions або окрему копію input envelope.
 
@@ -536,8 +548,9 @@ ruff format --check .
   відновлюється після рестарту.
 - Message edits не обробляються.
 - Albums можуть створювати кілька alerts.
-- Keyword matching залишається єдиним runtime-рішенням про доставку; AI observation працює
-  лише як fail-open пояснювальний блок і не блокує alerts.
+- Keyword matching визначає кандидатів для черги; ввімкнений AI observation класифікує їх,
+  але в поточному observation mode і `accept`, і `reject` доставляються для аналізу, тоді як
+  technical statuses залишаються fail-open.
 - Один послідовний worker зберігає порядок, але довгий AI timeout затримує наступні jobs;
   bounded concurrency можна додати окремо після вимірювання реального навантаження.
 - Перші 10 користувачів бота визначаються за принципом first come, first served; allowlist або

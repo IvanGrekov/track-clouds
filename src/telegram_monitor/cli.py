@@ -16,7 +16,7 @@ from typing import Protocol
 from telethon.sessions import StringSession
 
 from . import __version__
-from .ai_models import AIObservationTechnicalStatus
+from .ai_models import AIDecision, AIObservationTechnicalStatus
 from .app import connect_authorized, run_monitor
 from .client import create_client, create_login_client
 from .config import load_config
@@ -322,19 +322,22 @@ def _ai_check_payload(
                 "total_tokens": outcome.token_usage.total_tokens,
             }
         metadata["token_usage"] = token_usage
-        return (
-            {
-                "kind": "semantic",
-                "decision": result.decision.value,
-                "location": result.location,
-                "event": result.event,
-                "temporal_relevance": result.temporal_relevance.value,
-                "reason_code": result.reason_code.value,
-                "reason": result.reason,
-                "metadata": metadata,
-            },
-            0,
-        )
+        payload: dict[str, object] = {
+            "kind": "semantic",
+            "decision": result.decision.value,
+        }
+        if result.decision is AIDecision.ACCEPT:
+            if result.location is not None:
+                payload["location"] = result.location
+            if result.event is not None:
+                payload["event"] = result.event
+        else:
+            if result.reason_code is not None:
+                payload["reason_code"] = result.reason_code.value
+            if result.reason is not None:
+                payload["reason"] = result.reason
+        payload["metadata"] = metadata
+        return payload, 0
     return (
         {
             "kind": "technical_failure",

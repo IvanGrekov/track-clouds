@@ -5,25 +5,36 @@ import json
 import pytest
 
 from telegram_monitor.ai_models import (
-    AI_REASON_MAX_LENGTH,
     AIDecision,
     AIObservationResult,
     AIObservationTechnicalStatus,
     AIReasonCode,
     AIResponseValidationError,
-    AITemporalRelevance,
     parse_ai_observation_response,
 )
 
 
 def _accept_payload() -> dict[str, object]:
+    """Return the complete strict-schema representation of an ACCEPT result."""
+
     return {
         "decision": "accept",
         "location": "Городоцька, біля цирку",
         "event": "перекрита права смуга",
-        "temporal_relevance": "current",
-        "reason_code": "meets_all_criteria",
-        "reason": "Є актуальна подія та достатньо конкретна локація.",
+        "reason_code": None,
+        "reason": None,
+    }
+
+
+def _reject_payload() -> dict[str, object]:
+    """Return the complete strict-schema representation of a REJECT result."""
+
+    return {
+        "decision": "reject",
+        "location": None,
+        "event": None,
+        "reason_code": "spam_or_scam",
+        "reason": "Повідомлення є рекламою шахрайської схеми.",
     }
 
 
@@ -37,57 +48,38 @@ def test_parse_ai_observation_response_returns_typed_immutable_result() -> None:
         decision=AIDecision.ACCEPT,
         location="Городоцька, біля цирку",
         event="перекрита права смуга",
-        temporal_relevance=AITemporalRelevance.CURRENT,
-        reason_code=AIReasonCode.MEETS_ALL_CRITERIA,
-        reason="Є актуальна подія та достатньо конкретна локація.",
+        reason_code=None,
+        reason=None,
     )
     with pytest.raises(AttributeError):
-        result.reason = "changed"  # type: ignore[misc]
+        result.location = "changed"  # type: ignore[misc]
 
 
-def test_parse_ai_observation_response_accepts_reject_and_review() -> None:
-    rejected = _accept_payload()
-    rejected.update(
-        decision="reject",
-        location=None,
-        reason_code="no_location",
-        reason="Локація відсутня.",
-    )
-    review = _accept_payload()
-    review.update(
-        decision="review",
-        location=None,
-        temporal_relevance="unclear",
-        reason_code="ambiguous_location",
-        reason="Локація може міститися у відсутньому контексті.",
-    )
+def test_parse_ai_observation_response_accepts_both_semantic_decisions() -> None:
+    accepted = parse_ai_observation_response(_accept_payload())
+    rejected = parse_ai_observation_response(_reject_payload())
 
-    assert parse_ai_observation_response(rejected).decision is AIDecision.REJECT
-    assert parse_ai_observation_response(review).decision is AIDecision.REVIEW
+    assert accepted.decision is AIDecision.ACCEPT
+    assert rejected.decision is AIDecision.REJECT
+    assert rejected.reason_code is AIReasonCode.SPAM_OR_SCAM
 
 
-def test_reason_code_contract_matches_schema_values() -> None:
+def test_decision_contract_contains_only_accept_and_reject() -> None:
+    assert {decision.value for decision in AIDecision} == {"accept", "reject"}
+
+
+def test_reason_code_contract_contains_only_reject_reasons() -> None:
     assert {reason_code.value for reason_code in AIReasonCode} == {
-        "meets_all_criteria",
-        "notify_all_source",
         "spam_or_scam",
-        "no_location",
-        "no_event",
         "unrelated_content",
         "only_opinion_or_emotion",
         "political_commentary",
-        "ambiguous_location",
-        "ambiguous_event",
-        "ambiguous_recency",
-        "ambiguous_context",
-        "historical_context",
     }
 
 
 def test_unrelated_content_is_a_reject_reason() -> None:
-    payload = _accept_payload()
+    payload = _reject_payload()
     payload.update(
-        decision="reject",
         reason_code="unrelated_content",
         reason="Повідомлення не стосується стану маршруту.",
     )
@@ -98,96 +90,15 @@ def test_unrelated_content_is_a_reject_reason() -> None:
     assert result.reason_code is AIReasonCode.UNRELATED_CONTENT
 
 
-@pytest.mark.parametrize("temporal_relevance", ["current", "historical", "unclear"])
-def test_notify_all_source_accepts_nullable_components_with_any_temporal_relevance(
-    temporal_relevance: str,
-) -> None:
-    payload = _accept_payload()
-    payload.update(
-        location=None,
-        event=None,
-        temporal_relevance=temporal_relevance,
-        reason_code="notify_all_source",
-        reason="Джерело налаштоване приймати всі повідомлення.",
-    )
+def test_notify_all_accepts_decision_without_a_reason_code() -> None:
+    result = parse_ai_observation_response({"decision": "accept"}, notify_all=True)
 
-    result = parse_ai_observation_response(payload, notify_all=True)
-
-    assert result.decision is AIDecision.ACCEPT
-    assert result.reason_code is AIReasonCode.NOTIFY_ALL_SOURCE
-    assert result.location is None
-    assert result.event is None
-    assert result.temporal_relevance.value == temporal_relevance
+    assert result == AIObservationResult(decision=AIDecision.ACCEPT)
 
 
-@pytest.mark.parametrize("decision", ["reject", "review"])
-def test_notify_all_source_requires_accept_decision(decision: str) -> None:
-    payload = _accept_payload()
-    payload.update(
-        decision=decision,
-        location=None,
-        event=None,
-        temporal_relevance="unclear",
-        reason_code="notify_all_source",
-    )
-
+def test_notify_all_requires_accept_decision() -> None:
     with pytest.raises(AIResponseValidationError, match="notify_all.*decision accept"):
-        parse_ai_observation_response(payload, notify_all=True)
-
-
-def test_notify_all_requires_notify_all_source_reason_code() -> None:
-    with pytest.raises(AIResponseValidationError, match="notify_all_source"):
-        parse_ai_observation_response(_accept_payload(), notify_all=True)
-
-
-def test_notify_all_source_is_forbidden_for_regular_sources() -> None:
-    payload = _accept_payload()
-    payload["reason_code"] = "notify_all_source"
-
-    with pytest.raises(AIResponseValidationError, match="requires notify_all=true"):
-        parse_ai_observation_response(payload, notify_all=False)
-
-
-@pytest.mark.parametrize("decision", ["review", "reject"])
-@pytest.mark.parametrize(
-    ("reason_code", "null_field"),
-    [("no_location", "location"), ("no_event", "event")],
-)
-def test_missing_required_component_may_be_review_or_reject(
-    decision: str,
-    reason_code: str,
-    null_field: str,
-) -> None:
-    payload = _accept_payload()
-    payload.update(
-        decision=decision,
-        reason_code=reason_code,
-        temporal_relevance="unclear" if decision == "review" else "current",
-        reason="Обов’язковий компонент відсутній або залежить від контексту.",
-    )
-    payload[null_field] = None
-
-    result = parse_ai_observation_response(payload)
-
-    assert result.decision.value == decision
-    assert result.reason_code.value == reason_code
-    assert getattr(result, null_field) is None
-
-
-def test_historical_context_remains_review_with_historical_relevance() -> None:
-    payload = _accept_payload()
-    payload.update(
-        decision="review",
-        temporal_relevance="historical",
-        reason_code="historical_context",
-        reason="Повідомлення може бути корисним для подальшого аналізу.",
-    )
-
-    result = parse_ai_observation_response(payload)
-
-    assert result.decision is AIDecision.REVIEW
-    assert result.temporal_relevance is AITemporalRelevance.HISTORICAL
-    assert result.reason_code is AIReasonCode.HISTORICAL_CONTEXT
+        parse_ai_observation_response({"decision": "reject"}, notify_all=True)
 
 
 def test_parse_ai_observation_response_accepts_json_text() -> None:
@@ -222,158 +133,157 @@ def test_parse_ai_observation_response_requires_object(payload: object) -> None:
         parse_ai_observation_response(payload)
 
 
-def test_parse_ai_observation_response_requires_exact_fields() -> None:
-    missing = _accept_payload()
-    missing.pop("reason")
-    extra = _accept_payload()
-    extra["unexpected"] = "value"
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {
+            "location": None,
+            "event": None,
+            "reason_code": None,
+            "reason": None,
+        },
+    ],
+)
+def test_parse_ai_observation_response_requires_decision(
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(AIResponseValidationError, match="decision"):
+        parse_ai_observation_response(payload)
 
-    for payload in (missing, extra):
-        with pytest.raises(AIResponseValidationError, match="exactly"):
-            parse_ai_observation_response(payload)
+
+@pytest.mark.parametrize("decision", ["review", "maybe", 1, None])
+def test_parse_ai_observation_response_rejects_invalid_decision(decision: object) -> None:
+    payload = _accept_payload()
+    payload["decision"] = decision
+
+    with pytest.raises(AIResponseValidationError, match="decision"):
+        parse_ai_observation_response(payload)
+
+
+@pytest.mark.parametrize("decision", ["accept", "reject"])
+def test_parse_ai_observation_response_accepts_omitted_auxiliary_fields(
+    decision: str,
+) -> None:
+    result = parse_ai_observation_response({"decision": decision})
+
+    assert result.decision.value == decision
+    assert result.location is None
+    assert result.event is None
+    assert result.reason_code is None
+    assert result.reason is None
 
 
 @pytest.mark.parametrize(
     ("field_name", "value"),
     [
-        ("decision", "maybe"),
-        ("decision", 1),
-        ("temporal_relevance", "stale"),
+        ("location", 42),
+        ("location", True),
+        ("location", "  "),
+        ("event", 42),
+        ("event", True),
+        ("event", "  "),
+    ],
+)
+def test_accept_discards_invalid_location_or_event_without_failing(
+    field_name: str,
+    value: object,
+) -> None:
+    payload = _accept_payload()
+    payload[field_name] = value
+
+    result = parse_ai_observation_response(payload)
+
+    assert result.decision is AIDecision.ACCEPT
+    assert getattr(result, field_name) is None
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
         ("reason_code", "unsupported_reason"),
+        ("reason_code", 42),
+        ("reason_code", "  "),
+        ("reason", 42),
+        ("reason", True),
+        ("reason", "  "),
     ],
 )
-def test_parse_ai_observation_response_rejects_invalid_enums(
+def test_reject_discards_invalid_reason_fields_without_failing(
     field_name: str,
     value: object,
 ) -> None:
-    payload = _accept_payload()
+    payload = _reject_payload()
     payload[field_name] = value
 
-    with pytest.raises(AIResponseValidationError, match=field_name):
-        parse_ai_observation_response(payload)
+    result = parse_ai_observation_response(payload)
+
+    assert result.decision is AIDecision.REJECT
+    assert getattr(result, field_name) is None
 
 
-@pytest.mark.parametrize("field_name", ["location", "event"])
-@pytest.mark.parametrize("value", [42, True, "  "])
-def test_parse_ai_observation_response_rejects_invalid_nullable_text(
-    field_name: str,
-    value: object,
-) -> None:
+def test_parse_ai_observation_response_normalizes_valid_branch_fields() -> None:
+    accepted = _accept_payload()
+    accepted.update(location="  Стрийська  ", event="  ускладнений рух  ")
+    rejected = _reject_payload()
+    rejected.update(
+        reason_code="political_commentary",
+        reason="  Політичний коментар без інформації про маршрут.  ",
+    )
+
+    accept_result = parse_ai_observation_response(accepted)
+    reject_result = parse_ai_observation_response(rejected)
+
+    assert accept_result.location == "Стрийська"
+    assert accept_result.event == "ускладнений рух"
+    assert reject_result.reason_code is AIReasonCode.POLITICAL_COMMENTARY
+    assert reject_result.reason == "Політичний коментар без інформації про маршрут."
+
+
+def test_accept_discards_reject_only_fields_without_failing() -> None:
     payload = _accept_payload()
-    payload[field_name] = value
+    payload.update(
+        reason_code="spam_or_scam",
+        reason="Ці поля не належать ACCEPT-відповіді.",
+    )
 
-    with pytest.raises(AIResponseValidationError, match=field_name):
-        parse_ai_observation_response(payload)
+    result = parse_ai_observation_response(payload)
 
-
-@pytest.mark.parametrize("reason", [None, 42, "", "  ", "а" * (AI_REASON_MAX_LENGTH + 1)])
-def test_parse_ai_observation_response_rejects_invalid_reason(reason: object) -> None:
-    payload = _accept_payload()
-    payload["reason"] = reason
-
-    with pytest.raises(AIResponseValidationError, match="reason"):
-        parse_ai_observation_response(payload)
+    assert result.decision is AIDecision.ACCEPT
+    assert result.reason_code is None
+    assert result.reason is None
 
 
-@pytest.mark.parametrize(
-    ("updates", "message"),
-    [
-        ({"location": None}, "location and event"),
-        ({"event": None}, "location and event"),
-        ({"temporal_relevance": "historical"}, "current"),
-        (
-            {"reason_code": "no_location", "location": None},
-            "reason_code|accept|reject or review",
-        ),
-        ({"reason_code": "no_event", "event": None}, "reason_code|accept|review or reject"),
-        ({"reason_code": "unrelated_content"}, "reject reason_code"),
-        (
-            {
-                "decision": "reject",
-                "location": None,
-                "reason_code": "meets_all_criteria",
-            },
-            "only for accept",
-        ),
-    ],
-)
-def test_parse_ai_observation_response_enforces_accept_consistency(
-    updates: dict[str, object],
-    message: str,
-) -> None:
-    payload = _accept_payload()
-    payload.update(updates)
+def test_reject_discards_accept_only_fields_without_failing() -> None:
+    payload = _reject_payload()
+    payload.update(location="Городоцька", event="перекритий рух")
 
-    with pytest.raises(AIResponseValidationError, match=message):
-        parse_ai_observation_response(payload)
+    result = parse_ai_observation_response(payload)
+
+    assert result.decision is AIDecision.REJECT
+    assert result.location is None
+    assert result.event is None
 
 
-@pytest.mark.parametrize(
-    ("updates", "message"),
-    [
-        (
-            {"decision": "reject", "reason_code": "ambiguous_context"},
-            "review reason_code",
-        ),
-        (
-            {"decision": "review", "reason_code": "spam_or_scam"},
-            "reject reason_code",
-        ),
-        (
-            {"decision": "review", "reason_code": "unrelated_content"},
-            "reject reason_code",
-        ),
-        (
-            {"decision": "reject", "reason_code": "no_location"},
-            "null location",
-        ),
-        (
-            {"decision": "review", "reason_code": "no_location"},
-            "null location",
-        ),
-        (
-            {"decision": "reject", "reason_code": "no_event"},
-            "null event",
-        ),
-        (
-            {"decision": "review", "reason_code": "no_event"},
-            "null event",
-        ),
-        (
-            {
-                "decision": "review",
-                "reason_code": "historical_context",
-                "temporal_relevance": "current",
-            },
-            "historical temporal",
-        ),
-        (
-            {
-                "decision": "reject",
-                "reason_code": "historical_context",
-                "temporal_relevance": "historical",
-            },
-            "review reason_code",
-        ),
-        (
-            {
-                "decision": "review",
-                "reason_code": "ambiguous_recency",
-                "temporal_relevance": "current",
-            },
-            "unclear temporal",
-        ),
-    ],
-)
-def test_parse_ai_observation_response_enforces_reason_code_consistency(
-    updates: dict[str, object],
-    message: str,
-) -> None:
-    payload = _accept_payload()
-    payload.update(updates)
+def test_reject_reason_length_does_not_invalidate_the_decision() -> None:
+    payload = _reject_payload()
+    payload["reason"] = "п" * 1_000
 
-    with pytest.raises(AIResponseValidationError, match=message):
-        parse_ai_observation_response(payload)
+    result = parse_ai_observation_response(payload)
+
+    assert result.decision is AIDecision.REJECT
+    assert result.reason == "п" * 1_000
+
+
+def test_invalid_auxiliary_fields_do_not_echo_raw_model_content() -> None:
+    private_marker = "DO_NOT_ECHO_MODEL_OUTPUT_42"
+    payload = _reject_payload()
+    payload["reason_code"] = private_marker
+
+    result = parse_ai_observation_response(payload)
+
+    assert result.reason_code is None
+    assert private_marker not in repr(result)
 
 
 def test_validation_error_does_not_echo_raw_model_content() -> None:
