@@ -18,8 +18,11 @@ enabled = false
 model = "gpt-5.4-nano-2026-03-17"
 # Directory with the single current system prompt and strict response format.
 prompt_bundle_path = "prompts"
-# Private local file; AI_POLICY_PROMPT overrides it on Railway.
+# Required private base policy; Railway uses the required AI_POLICY_PROMPT variable instead.
 policy_prompt_path = "policy-prompt.txt"
+# Optional private extension appended after the base policy. A non-empty
+# AI_POLICY_PROMPT_EXTENDED_EXAMPLES overrides this file; an empty variable disables it.
+policy_prompt_extended_examples_path = "policy-prompt-extended-examples.txt"
 default_trusted_area_context = "Львівська область"
 # Upper bound for the remaining caller-supplied budget shared by attempts, sleeps and parsing.
 operation_timeout_seconds = 30

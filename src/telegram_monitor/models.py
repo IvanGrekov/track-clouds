@@ -34,6 +34,7 @@ class AIObservationConfig:
     reasoning_effort: AIReasoningEffort = "none"
     max_output_tokens: int = 800
     store_responses: bool = False
+    policy_prompt_extended_examples_path: str | Path = Path("policy-prompt-extended-examples.txt")
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
@@ -43,7 +44,11 @@ class AIObservationConfig:
             raise ConfigurationError("ai_observation.model must be a non-empty string")
         object.__setattr__(self, "model", self.model.strip())
 
-        for field_name in ("prompt_bundle_path", "policy_prompt_path"):
+        for field_name in (
+            "prompt_bundle_path",
+            "policy_prompt_path",
+            "policy_prompt_extended_examples_path",
+        ):
             configured_path = getattr(self, field_name)
             if isinstance(configured_path, str):
                 if not configured_path.strip():

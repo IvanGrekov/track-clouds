@@ -57,9 +57,23 @@ cp .env.example .env
 cp config.example.toml config.toml
 ```
 
-Приватний предметний prompt зберігайте в кореневому `policy-prompt.txt`. Як і
-`config.toml`, цей файл ігнорується Git. Він потрібен для ввімкненого AI observation
-або ручного `ai-check --live` і має містити поточну предметну policy у UTF-8.
+Обов'язкову приватну базову policy зберігайте в кореневому `policy-prompt.txt`. Винесені
+розширені нормативні приклади можна опціонально зберігати поруч у
+`policy-prompt-extended-examples.txt`: loader додає їх після базової policy. Відсутній або
+порожній extension-файл означає роботу лише з базовою policy. Як і `config.toml`, обидва
+prompt-файли ігноруються Git. Базова policy потрібна для ввімкненого AI observation або
+ручного `ai-check --live`; обидва файли, коли вони використовуються, мають бути у UTF-8.
+
+Для міграції на split policy:
+
+1. Перемістіть із `policy-prompt.txt` **сам заголовок**
+   `РОЗШИРЕНІ НОРМАТИВНІ ПРИКЛАДИ` і весь текст нижче нього в
+   `policy-prompt-extended-examples.txt`.
+2. Видаліть цей блок із `policy-prompt.txt`, щоб приклади не застосовувалися двічі й base
+   prompt справді став коротшим.
+3. На Railway повторіть той самий split: `AI_POLICY_PROMPT` має містити base без цього
+   блока, а `AI_POLICY_PROMPT_EXTENDED_EXAMPLES` — заголовок і весь перенесений хвіст.
+   Перевірте, що кожна variable окремо вкладається в Railway limit.
 
 Заповніть у `.env` `TELEGRAM_API_ID` та `TELEGRAM_API_HASH`, після чого створіть окрему
 user-session. `OPENAI_API_KEY` потрібен, коли `[ai_observation].enabled = true` або коли
@@ -156,6 +170,7 @@ enabled = false
 model = "gpt-5.4-nano-2026-03-17"
 prompt_bundle_path = "prompts"
 policy_prompt_path = "policy-prompt.txt"
+policy_prompt_extended_examples_path = "policy-prompt-extended-examples.txt"
 default_trusted_area_context = "Львів"
 operation_timeout_seconds = 30
 request_attempts = 2
@@ -197,18 +212,22 @@ trusted_area_context = "Львів та околиці"
   `prompts` або вкажіть абсолютний шлях;
 - відносний `policy_prompt_path` так само обчислюється від директорії `config.toml`. За
   замовчуванням це приватний кореневий `policy-prompt.txt`, який є в `.gitignore`;
+- відносний `policy_prompt_extended_examples_path` обчислюється за тим самим правилом. Це
+  опціональний приватний файл: якщо він існує й непорожній, його вміст додається після
+  базової policy; відсутній або порожній файл означає base-only режим;
 - `prompts` містить поточні `system-prompt.txt` і `response-format.json`; private
-  policy завантажується окремо з файла або `AI_POLICY_PROMPT`;
+  base policy завантажується окремо з файла або `AI_POLICY_PROMPT`, а optional extension —
+  із другого файла або `AI_POLICY_PROMPT_EXTENDED_EXAMPLES`;
 - `response-format.json` містить поточний strict JSON Schema wrapper з іменем
   `telegram_mobility_observation`, придатний для передачі в
   Responses API як `text.format`. Локальний loader перевіряє структуру schema, а parser —
   JSON-форму та обов'язкове бінарне рішення відповідно до
   [OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs),
   а ізольований client використовує цей формат у фактичному request;
-- `prompt_hash` — повний SHA-256 від system prompt, фактично завантаженої приватної policy
-  та канонічного JSON усього response format. Модель, API key, джерело policy, шлях, timeout
-  і retries до hash не входять. Hash є fingerprint-ом фактично завантаженого вмісту,
-  а не номером його версії;
+- `prompt_hash` — повний SHA-256 від system prompt, фактично сформованої приватної policy
+  (base плюс завантажений optional extension) та канонічного JSON усього response format.
+  Модель, API key, джерела policy, шляхи, timeout і retries до hash не входять. Hash є
+  fingerprint-ом фактично завантаженого вмісту, а не номером його версії;
 - `OPENAI_API_KEY` створюється в OpenAI Platform і зберігається лише в `.env`, як описано в
   [офіційному quickstart](https://developers.openai.com/api/docs/quickstart#create-and-export-an-api-key).
   Валідатор перевіряє його наявність без повернення, показу чи логування значення.
@@ -371,14 +390,17 @@ response, raw exception або окрему копію input envelope. Водн�
 фрагменти вхідного повідомлення. Токени в metadata є лише кількісною usage-статистикою.
 Якщо OpenAI не повернув token usage, поле `token_usage` буде `null`.
 
-### Приватна policy на Railway
+### Приватна policy та optional extension на Railway
 
-У Railway додайте до service окрему variable з назвою `AI_POLICY_PROMPT` і вставте в неї
-повний вміст локального `policy-prompt.txt` як звичайний багаторядковий текст:
+У Railway `AI_POLICY_PROMPT` є обов'язковою для ввімкненого AI observation: додайте її до
+service і вставте базову policy з локального `policy-prompt.txt` як звичайний
+багаторядковий текст. Якщо потрібна винесена секція розширених прикладів, додайте також
+опціональну `AI_POLICY_PROMPT_EXTENDED_EXAMPLES` із вмістом локального
+`policy-prompt-extended-examples.txt`. Loader додає цей extension після базової policy.
 
 ```text
-МЕТА
-...
+AI_POLICY_PROMPT=<multiline base policy; required>
+AI_POLICY_PROMPT_EXTENDED_EXAMPLES=<multiline extended examples; optional>
 ```
 
 Не обгортайте значення в JSON, не замінюйте переноси рядків на текст `\n` і не кодуйте його
@@ -389,7 +411,7 @@ response, raw exception або окрему копію input envelope. Водн�
 Після додавання або зміни variable перегляньте staged changes і виконайте deploy, інакше
 running service не отримає нове значення.
 
-Правила вибору джерела:
+Правила вибору базової policy:
 
 1. Якщо `AI_POLICY_PROMPT` присутня, використовується тільки її значення.
 2. Якщо variable відсутня, читається локальний `policy_prompt_path`.
@@ -397,11 +419,22 @@ running service не отримає нове значення.
 4. Якщо немає ні variable, ні файла, loader повертає безпечну configuration error без
    виведення policy в лог.
 
-Таким чином Railway deployment не потребує policy у Git або Docker image. Після вставлення
-того самого тексту hash буде однаковим локально й на Railway: loader нормалізує типи
-переносів рядків і завершальний newline перед обчисленням fingerprint.
+Правила вибору optional extension:
 
-У runtime використовується поточне значення `AI_POLICY_PROMPT`. Доступ до Railway variable надавайте лише тим
+1. Непорожня `AI_POLICY_PROMPT_EXTENDED_EXAMPLES` має пріоритет над локальним
+   `policy_prompt_extended_examples_path`.
+2. Присутня, але порожня variable явно вимикає extension; fallback до файла не виконується.
+3. Якщо variable відсутня, loader читає configured extension-файл, лише коли він існує.
+4. Відсутній або порожній extension-файл не є помилкою: request використовує тільки базову
+   policy.
+
+Таким чином Railway deployment потребує `AI_POLICY_PROMPT`, але
+`AI_POLICY_PROMPT_EXTENDED_EXAMPLES` лишається опціональною; жоден приватний prompt не
+потрібен у Git або Docker image. Після вставлення тих самих частин hash буде однаковим
+локально й на Railway: loader нормалізує типи переносів рядків і завершальні newline перед
+обчисленням fingerprint.
+
+У runtime використовуються поточні значення цих variables. Доступ до них надавайте лише тим
 людям і процесам, яким дозволено бачити policy; не виводьте environment dump у логи.
 
 ## Куди надсилати сповіщення
@@ -471,14 +504,17 @@ docker compose logs -f telegram-monitor
 
 Compose монтує локальний `config.toml` у `/app/config.toml` лише для читання та named volume
 у `/app/.state`, тому підписники й Bot API offset не зникають після recreate контейнера.
-Локальний `policy-prompt.txt` монтується read-only у `/app/policy-prompt.txt`. Поточний
-tracked bundle `prompts` входить до Docker image, але private policy навмисно
-виключена через `.dockerignore`. Для локального запуску SQLite зберігається в `.state/`
-проєкту.
+Локальний обов'язковий `policy-prompt.txt` монтується read-only у
+`/app/policy-prompt.txt`. Опціональний extension-файл не монтується стандартним
+`compose.yaml`; для Compose передайте `AI_POLICY_PROMPT_EXTENDED_EXAMPLES` через локальне
+environment-джерело або запустіть застосунок без контейнера, щоб він прочитав configured
+`policy_prompt_extended_examples_path`. Поточний tracked bundle `prompts` входить до Docker
+image, але обидва private policy-файли навмисно виключені через `.dockerignore`. Для
+локального запуску SQLite зберігається в `.state/` проєкту.
 
 Не публікуйте й не вставляйте в issue або chat output команди `docker compose config`: при
 використанні `env_file` вона може відобразити розгорнуті secrets, а якщо policy задана через
-`.env` — також повний `AI_POLICY_PROMPT`.
+`.env` — також повні `AI_POLICY_PROMPT` та `AI_POLICY_PROMPT_EXTENDED_EXAMPLES`.
 
 Зупинка через `Ctrl+C` або `docker compose stop` коректно від'єднує Telegram-клієнт і
 намагається доставити вже поставлені в чергу alerts.
@@ -547,7 +583,7 @@ response не додається. Message text, location, event, reason, excepti
 ```
 
 Тести не підключаються до Telegram чи OpenAI, не потребують реальних credentials і
-перевіряють nested TOML, межі значень, bundle validation, стабільність `prompt_hash`,
+перевіряють nested TOML, межі значень, bundle validation, optional extension і стабільність `prompt_hash`,
 бінарний parsing, nullable wire-поля, формування Responses API request, retries, єдиний
 timeout budget і нормалізацію помилок, pipeline deduplication, formatter та lifecycle повністю
 офлайн через fake SDK/observer clients. `ai-check` тестується через injected fake

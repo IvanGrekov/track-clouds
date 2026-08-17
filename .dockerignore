@@ -2,7 +2,9 @@
 .env
 config.toml
 policy-prompt.txt
+policy-prompt-extended-examples.txt
 prompts/*/policy-prompt.txt
+prompts/*/policy-prompt-extended-examples.txt
 .venv
 *.session
 *.session-journal

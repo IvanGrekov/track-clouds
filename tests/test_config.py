@@ -43,6 +43,10 @@ keywords_to_skip = ["spam"]
     assert config.ai_observation.enabled is False
     assert config.ai_observation.prompt_bundle_path == (tmp_path / "prompts").resolve()
     assert config.ai_observation.policy_prompt_path == (tmp_path / "policy-prompt.txt").resolve()
+    assert (
+        config.ai_observation.policy_prompt_extended_examples_path
+        == (tmp_path / "policy-prompt-extended-examples.txt").resolve()
+    )
 
 
 def test_load_config_builds_nested_ai_observation_config(tmp_path: Path) -> None:
@@ -59,6 +63,7 @@ enabled = true
 model = "test-model-snapshot"
 prompt_bundle_path = "prompt-bundle"
 policy_prompt_path = "private/mobility-test-policy.txt"
+policy_prompt_extended_examples_path = "private/extended-examples.txt"
 default_trusted_area_context = " Львів "
 operation_timeout_seconds = 25
 request_attempts = 3
@@ -84,6 +89,10 @@ trusted_area_context = " Львівська область "
         config.ai_observation.policy_prompt_path
         == (config_dir / "private" / "mobility-test-policy.txt").resolve()
     )
+    assert (
+        config.ai_observation.policy_prompt_extended_examples_path
+        == (config_dir / "private" / "extended-examples.txt").resolve()
+    )
     assert config.ai_observation.default_trusted_area_context == "Львів"
     assert config.ai_observation.operation_timeout_seconds == 25.0
     assert config.ai_observation.request_attempts == 3
@@ -98,6 +107,9 @@ trusted_area_context = " Львівська область "
 def test_load_config_keeps_absolute_ai_prompt_paths(tmp_path: Path) -> None:
     absolute_bundle = (tmp_path / "shared-prompts").resolve()
     absolute_policy = (tmp_path / "private" / "policy-prompt.txt").resolve()
+    absolute_extended_examples = (
+        tmp_path / "private" / "policy-prompt-extended-examples.txt"
+    ).resolve()
     path = tmp_path / "config.toml"
     _write_config(
         path,
@@ -105,6 +117,7 @@ def test_load_config_keeps_absolute_ai_prompt_paths(tmp_path: Path) -> None:
 [ai_observation]
 prompt_bundle_path = {str(absolute_bundle)!r}
 policy_prompt_path = {str(absolute_policy)!r}
+policy_prompt_extended_examples_path = {str(absolute_extended_examples)!r}
 
 [[sources]]
 peer = "@updates"
@@ -116,6 +129,7 @@ notify_all = true
 
     assert config.ai_observation.prompt_bundle_path == absolute_bundle
     assert config.ai_observation.policy_prompt_path == absolute_policy
+    assert config.ai_observation.policy_prompt_extended_examples_path == absolute_extended_examples
 
 
 def test_repository_example_config_is_valid() -> None:
@@ -126,6 +140,9 @@ def test_repository_example_config_is_valid() -> None:
     assert config.ai_observation.enabled is False
     assert config.ai_observation.prompt_bundle_path == repository_root / "prompts"
     assert config.ai_observation.policy_prompt_path == repository_root / "policy-prompt.txt"
+    assert config.ai_observation.policy_prompt_extended_examples_path == (
+        repository_root / "policy-prompt-extended-examples.txt"
+    )
 
 
 def test_load_config_reports_missing_file(tmp_path: Path) -> None:
@@ -205,6 +222,8 @@ notify_all = true
         ("max_output_tokens", "2049"),
         ("policy_prompt_path", '""'),
         ("policy_prompt_path", "42"),
+        ("policy_prompt_extended_examples_path", '""'),
+        ("policy_prompt_extended_examples_path", "42"),
     ],
 )
 def test_load_config_rejects_invalid_ai_observation_values(
