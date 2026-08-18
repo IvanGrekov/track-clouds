@@ -156,6 +156,33 @@ def test_source_rejects_non_boolean_notify_all() -> None:
         SourceRule(peer="@chat", keywords=("aws",), notify_all=1)  # type: ignore[arg-type]
 
 
+def test_source_skip_ai_defaults_to_false_and_accepts_true() -> None:
+    observed = SourceRule(peer="@observed", keywords=("aws",))
+    skipped = SourceRule(peer="@skipped", keywords=("aws",), skip_ai=True)
+
+    assert observed.skip_ai is False
+    assert skipped.skip_ai is True
+
+
+def test_source_rejects_non_boolean_skip_ai() -> None:
+    with pytest.raises(ConfigurationError, match="skip_ai must be True or False"):
+        SourceRule(peer="@chat", keywords=("aws",), skip_ai=1)  # type: ignore[arg-type]
+
+
+def test_source_preserves_existing_positional_argument_order() -> None:
+    source = SourceRule(
+        "@chat",
+        ("aws",),
+        False,
+        "Label",
+        ("spam",),
+        "Львів",
+    )
+
+    assert source.trusted_area_context == "Львів"
+    assert source.skip_ai is False
+
+
 def test_source_cleans_keywords_and_label() -> None:
     source = SourceRule(
         peer=-1001234567890,
