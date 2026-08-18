@@ -140,7 +140,6 @@ async def test_observe_builds_request_at_call_time() -> None:
     assert request.message_age_seconds == 45
     assert request.trusted_area_context == "Львів"
     assert request.matched_keywords == ("перекри",)
-    assert request.notify_all is False
 
 
 @pytest.mark.asyncio

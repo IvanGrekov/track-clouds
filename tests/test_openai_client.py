@@ -104,18 +104,13 @@ def _config(**overrides: object) -> AIObservationConfig:
     return AIObservationConfig(**values)  # type: ignore[arg-type]
 
 
-def _request(
-    *,
-    marker: str = "дорогу перекрито",
-    notify_all: bool = False,
-) -> AIObservationRequest:
+def _request(*, marker: str = "дорогу перекрито") -> AIObservationRequest:
     return AIObservationRequest(
         message_text=f"На Городоцькій зараз {marker}",
         sent_at=datetime(2026, 8, 10, 9, 55, 20, tzinfo=UTC),
         message_age_seconds=8,
         trusted_area_context="Львів",
-        matched_keywords=() if notify_all else ("перекри",),
-        notify_all=notify_all,
+        matched_keywords=("перекри",),
     )
 
 
@@ -130,15 +125,6 @@ def _accepted_json() -> str:
         },
         ensure_ascii=False,
     )
-
-
-def _notify_all_json() -> str:
-    payload = json.loads(_accepted_json())
-    payload.update(
-        location=None,
-        event=None,
-    )
-    return json.dumps(payload, ensure_ascii=False)
 
 
 def _rejected_json() -> str:
@@ -295,7 +281,6 @@ def _request_values() -> dict[str, object]:
         "message_age_seconds": 8,
         "trusted_area_context": "Львів",
         "matched_keywords": ("перекри",),
-        "notify_all": False,
     }
 
 
@@ -311,7 +296,7 @@ def _request_values() -> dict[str, object]:
         ({"message_age_seconds": 1.5}, "message_age_seconds"),
         ({"matched_keywords": "перекри"}, "matched_keywords"),
         ({"matched_keywords": (42,)}, "matched keyword"),
-        ({"notify_all": 1}, "notify_all"),
+        ({"matched_keywords": [" ", ""]}, "matched_keywords"),
         ({"trusted_area_context": 42}, "trusted_area_context"),
     ],
 )
@@ -326,19 +311,16 @@ def test_request_rejects_invalid_values(
         AIObservationRequest(**values)  # type: ignore[arg-type]
 
 
-def test_request_allows_empty_keyword_matches_and_normalizes_optional_text() -> None:
+def test_request_normalizes_keyword_matches_and_optional_text() -> None:
     values = _request_values()
     values.update(
-        matched_keywords=[" ", ""],
-        # A question may pass the deterministic filter without a keyword or notify_all.
-        notify_all=False,
+        matched_keywords=["  перекри  ", ""],
         trusted_area_context="  ",
     )
 
     request = AIObservationRequest(**values)  # type: ignore[arg-type]
 
-    assert request.matched_keywords == ()
-    assert request.notify_all is False
+    assert request.matched_keywords == ("перекри",)
     assert request.trusted_area_context is None
 
 
@@ -388,29 +370,7 @@ async def test_classify_sends_exact_responses_request_and_returns_usage() -> Non
         "trusted_area_context": "Львів",
         "prefilter": {
             "matched_keywords": ["перекри"],
-            "notify_all": False,
         },
-    }
-
-
-@pytest.mark.asyncio
-async def test_classify_accepts_notify_all_with_nullable_components() -> None:
-    client, sdk = _client([_sdk_response(_notify_all_json())])
-
-    outcome = await client.classify(_request(notify_all=True), timeout_seconds=1)
-
-    assert isinstance(outcome, AIObservationSuccess)
-    assert outcome.result.decision is AIDecision.ACCEPT
-    assert outcome.result.reason_code is None
-    assert outcome.result.location is None
-    assert outcome.result.event is None
-
-    raw_input = sdk.responses.calls[0]["input"]
-    assert isinstance(raw_input, list)
-    input_payload = json.loads(raw_input[-1]["content"])
-    assert input_payload["prefilter"] == {
-        "matched_keywords": [],
-        "notify_all": True,
     }
 
 
@@ -435,13 +395,13 @@ async def test_classify_tolerates_and_discards_invalid_auxiliary_fields() -> Non
 
 
 @pytest.mark.asyncio
-async def test_classify_requires_accept_decision_for_notify_all_request() -> None:
+async def test_classify_accepts_reject_decision() -> None:
     client, _ = _client([_sdk_response(_rejected_json())])
 
-    outcome = await client.classify(_request(notify_all=True), timeout_seconds=1)
+    outcome = await client.classify(_request(), timeout_seconds=1)
 
-    assert isinstance(outcome, AIObservationFailure)
-    assert outcome.status is AIObservationTechnicalStatus.INVALID_RESPONSE
+    assert isinstance(outcome, AIObservationSuccess)
+    assert outcome.result.decision is AIDecision.REJECT
 
 
 @pytest.mark.asyncio

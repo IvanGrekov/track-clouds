@@ -514,6 +514,82 @@ async def test_observes_once_and_reuses_rendered_alert_for_delivery_retry() -> N
 
 
 @pytest.mark.asyncio
+async def test_notify_all_source_skips_observer_and_preserves_delivery_deduplication() -> None:
+    announcements_id = -1002222222222
+    client = FakeClient([_dialog(announcements_id, "announcements", "Announcements")])
+    config = MonitorConfig(
+        sources=(
+            SourceRule(
+                peer="@announcements",
+                keywords=("k8s",),
+                notify_all=True,
+            ),
+        ),
+        timezone="UTC",
+        delivery_attempts=2,
+        delivery_retry_base_seconds=0,
+        delivery_retry_max_seconds=0,
+        ai_observation=AIObservationConfig(enabled=True),
+    )
+    notifier = FakeNotifier(failures=1)
+    observer = FakeObserver([])
+    monitor = TelegramMonitor(client, config, notifier, ai_observer=observer)
+    await monitor.prepare()
+
+    event = FakeEvent(announcements_id, 65, "k8s valid notify-all update")
+    await monitor.handle_event(event)
+    await monitor.handle_event(event)
+    await monitor._queue.join()
+    await monitor.handle_event(event)
+    await monitor._queue.join()
+
+    assert observer.calls == []
+    assert notifier.calls == 2
+    assert notifier.attempted == [notifier.sent[0], notifier.sent[0]]
+    assert len(notifier.sent) == 1
+    assert "k8s valid notify-all update" in notifier.sent[0]
+    assert "AI analysis:" not in notifier.sent[0]
+    await monitor.close()
+    assert observer.closed is True
+
+
+@pytest.mark.asyncio
+async def test_mixed_sources_observe_only_non_notify_all_messages() -> None:
+    discussion_id = -1001111111111
+    announcements_id = -1002222222222
+    client = FakeClient(
+        [
+            _dialog(discussion_id, "discussion", "Discussion"),
+            _dialog(announcements_id, "announcements", "Announcements"),
+        ]
+    )
+    config = MonitorConfig(
+        sources=(
+            SourceRule(peer="@discussion", keywords=("k8s",)),
+            SourceRule(peer="@announcements", notify_all=True),
+        ),
+        timezone="UTC",
+        ai_observation=AIObservationConfig(enabled=True),
+    )
+    notifier = FakeNotifier()
+    observer = FakeObserver([_success_report()])
+    monitor = TelegramMonitor(client, config, notifier, ai_observer=observer)
+    await monitor.prepare()
+
+    await monitor.handle_event(
+        FakeEvent(announcements_id, 66, "valid announcement without configured keywords")
+    )
+    await monitor.handle_event(FakeEvent(discussion_id, 67, "k8s valid road update"))
+    await monitor._queue.join()
+
+    assert [call[0].message_id for call in observer.calls] == [67]
+    assert len(notifier.sent) == 2
+    assert "AI analysis:" not in notifier.sent[0]
+    assert "Decision: accept" in notifier.sent[1]
+    await monitor.close()
+
+
+@pytest.mark.asyncio
 async def test_failed_delivery_does_not_allow_duplicate_to_repeat_observation() -> None:
     discussion_id = -1001111111111
     client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])

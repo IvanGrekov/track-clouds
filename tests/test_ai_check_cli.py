@@ -85,19 +85,6 @@ def _success(decision: AIDecision) -> AIObservationSuccess:
     )
 
 
-def _notify_all_success() -> AIObservationSuccess:
-    return AIObservationSuccess(
-        result=AIObservationResult(
-            decision=AIDecision.ACCEPT,
-        ),
-        model="gpt-5.4-nano-2026-03-17",
-        prompt_hash="a" * 64,
-        api_latency_seconds=0.321,
-        attempts=1,
-        token_usage=AIObservationTokenUsage(100, 20, 120),
-    )
-
-
 def _failure(status: AIObservationTechnicalStatus) -> AIObservationFailure:
     return AIObservationFailure(
         status=status,
@@ -200,7 +187,7 @@ def test_ai_check_requires_exactly_one_text_input(
         ["ai-check", "--live", "--matched-keyword", "  ", "message text"],
     ),
 )
-def test_ai_check_requires_keyword_or_notify_all_before_configuration(
+def test_ai_check_requires_keyword_before_configuration(
     argv: list[str],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -216,10 +203,27 @@ def test_ai_check_requires_keyword_or_notify_all_before_configuration(
         cli.main(argv)
 
     assert raised.value.code == 2
-    assert "--matched-keyword or --notify-all" in capsys.readouterr().err
+    assert "requires --matched-keyword" in capsys.readouterr().err
 
 
-def test_main_accepts_stdin_and_notify_all_without_constructing_telegram(
+def test_ai_check_rejects_removed_notify_all_flag_before_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "load_config",
+        lambda: pytest.fail("removed arguments must stop before configuration loading"),
+    )
+
+    with pytest.raises(SystemExit) as raised:
+        cli.main(["ai-check", "--live", "--notify-all", "message text"])
+
+    assert raised.value.code == 2
+    assert "unrecognized arguments: --notify-all" in capsys.readouterr().err
+
+
+def test_main_accepts_stdin_and_keyword_without_constructing_telegram(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = _config()
@@ -239,7 +243,8 @@ def test_main_accepts_stdin_and_notify_all_without_constructing_telegram(
             "ai-check",
             "--live",
             "--stdin",
-            "--notify-all",
+            "--matched-keyword",
+            "road",
             "--message-age-seconds",
             "8",
         ]
@@ -249,8 +254,7 @@ def test_main_accepts_stdin_and_notify_all_without_constructing_telegram(
     assert observed == {
         "text": "stdin route report",
         "config": config,
-        "matched_keywords": (),
-        "notify_all": True,
+        "matched_keywords": ("road",),
         "trusted_area_context": None,
         "message_age_seconds": 8,
     }
@@ -287,7 +291,6 @@ def test_main_accepts_positional_text_and_multiple_keywords(
     assert exit_code == 0
     assert observed["text"] == "route report"
     assert observed["matched_keywords"] == ("хмар", "зелен")
-    assert observed["notify_all"] is False
     assert observed["trusted_area_context"] == "Львів"
 
 
@@ -349,7 +352,6 @@ async def test_run_ai_check_maps_request_and_uses_disabled_config_for_one_live_c
         input_marker,
         config,
         matched_keywords=("перекри", "дорог"),
-        notify_all=False,
         trusted_area_context=None,
         message_age_seconds=8,
         client_factory=factory,
@@ -368,7 +370,6 @@ async def test_run_ai_check_maps_request_and_uses_disabled_config_for_one_live_c
     assert request.message_age_seconds == 8
     assert request.trusted_area_context == "Львів"
     assert request.matched_keywords == ("перекри", "дорог")
-    assert request.notify_all is False
     assert timeout_seconds == 17
     assert client.close_calls == 1
     payload = _payload(capsys)
@@ -386,7 +387,6 @@ async def test_explicit_area_context_overrides_configured_fallback(
         "На дорозі зараз перекрито рух",
         _config(),
         matched_keywords=("перекри",),
-        notify_all=False,
         trusted_area_context="Київ",
         message_age_seconds=0,
         client_factory=lambda config: client,  # type: ignore[arg-type,return-value]
@@ -396,32 +396,6 @@ async def test_explicit_area_context_overrides_configured_fallback(
     request, _ = client.classify_calls[0]
     assert request.trusted_area_context == "Київ"
     _payload(capsys)
-
-
-@pytest.mark.asyncio
-async def test_notify_all_live_check_preserves_request_context_and_nullable_result(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    client = FakeAIClient(_notify_all_success())
-
-    exit_code = await cli._run_ai_check(
-        "Повідомлення з джерела, де дозволені всі дописи",
-        _config(),
-        matched_keywords=(),
-        notify_all=True,
-        trusted_area_context=None,
-        message_age_seconds=0,
-        client_factory=lambda config: client,  # type: ignore[arg-type,return-value]
-    )
-
-    assert exit_code == 0
-    request, _ = client.classify_calls[0]
-    assert request.matched_keywords == ()
-    assert request.notify_all is True
-    payload = _payload(capsys)
-    assert payload["kind"] == "semantic"
-    assert payload["decision"] == "accept"
-    assert set(payload) == {"kind", "decision", "metadata"}
 
 
 @pytest.mark.asyncio
@@ -436,7 +410,6 @@ async def test_semantic_decisions_are_successful_json_results(
         "На маршруті є достатньо довге повідомлення",
         _config(),
         matched_keywords=("маршрут",),
-        notify_all=False,
         trusted_area_context=None,
         message_age_seconds=0,
         client_factory=lambda config: client,  # type: ignore[arg-type,return-value]
@@ -477,7 +450,6 @@ async def test_technical_statuses_are_exit_three_without_semantic_fields(
         "На маршруті є достатньо довге повідомлення",
         _config(),
         matched_keywords=("маршрут",),
-        notify_all=False,
         trusted_area_context=None,
         message_age_seconds=0,
         client_factory=lambda config: client,  # type: ignore[arg-type,return-value]
@@ -509,7 +481,6 @@ async def test_unexpected_classify_error_is_safe_and_client_is_closed_once(
         "На маршруті є sensitive-message-marker",
         _config(),
         matched_keywords=("маршрут",),
-        notify_all=False,
         trusted_area_context=None,
         message_age_seconds=0,
         client_factory=lambda config: client,  # type: ignore[arg-type,return-value]
@@ -544,7 +515,6 @@ async def test_close_error_preserves_semantic_result_and_logs_safely(
         "На маршруті є sensitive-message-marker",
         _config(),
         matched_keywords=("маршрут",),
-        notify_all=False,
         trusted_area_context=None,
         message_age_seconds=0,
         client_factory=lambda config: client,
@@ -574,7 +544,6 @@ async def test_factory_configuration_error_is_propagated_without_reading_dotenv(
             "На маршруті є достатньо довге повідомлення",
             _config(),
             matched_keywords=("маршрут",),
-            notify_all=False,
             trusted_area_context=None,
             message_age_seconds=0,
             client_factory=failed_factory,

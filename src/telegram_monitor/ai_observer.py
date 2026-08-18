@@ -124,7 +124,7 @@ _ClientFactory: TypeAlias = Callable[[AIObservationConfig], OpenAIObservationCli
 
 
 class OpenAIMessageObserver:
-    """Run one bounded OpenAI classification for the current message."""
+    """Run one bounded OpenAI classification for a keyword-matched message."""
 
     def __init__(
         self,
@@ -227,7 +227,6 @@ class OpenAIMessageObserver:
             message_age_seconds=message_age_seconds,
             trusted_area_context=trusted_area_context,
             matched_keywords=snapshot.matched_keywords,
-            notify_all=snapshot.notify_all,
         )
 
     def _from_client_outcome(

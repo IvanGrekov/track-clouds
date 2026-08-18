@@ -64,14 +64,13 @@ class _AsyncOpenAIClient(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class AIObservationRequest:
-    """Trusted envelope whose text fields remain untrusted model input."""
+    """Trusted envelope for one keyword-matched message sent to the model."""
 
     message_text: str = field(repr=False)
     sent_at: datetime
     message_age_seconds: int
+    matched_keywords: tuple[str, ...] | list[str] = field(repr=False)
     trusted_area_context: str | None = field(default=None, repr=False)
-    matched_keywords: tuple[str, ...] | list[str] = field(default=(), repr=False)
-    notify_all: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.message_text, str) or not self.message_text.strip():
@@ -95,9 +94,10 @@ class AIObservationRequest:
             "matched_keywords",
             tuple(keyword.strip() for keyword in self.matched_keywords if keyword.strip()),
         )
-        if not isinstance(self.notify_all, bool):
-            raise ValueError("AI observation notify_all must be boolean")
-
+        if not self.matched_keywords:
+            raise ValueError(
+                "AI observation matched_keywords must contain at least one non-empty string"
+            )
         if self.trusted_area_context is not None:
             if not isinstance(self.trusted_area_context, str):
                 raise ValueError("AI observation trusted_area_context must be a string or null")
@@ -413,7 +413,6 @@ class OpenAIObservationClient:
                 response,
                 started=started,
                 attempts=attempts[0],
-                notify_all=request.notify_all,
             )
 
         return self._failure(
@@ -466,7 +465,6 @@ class OpenAIObservationClient:
         *,
         started: float,
         attempts: int,
-        notify_all: bool,
     ) -> AIObservationOutcome:
         request_id = _safe_request_id(_member(response, "_request_id"))
         response_text: str | None = None
@@ -530,10 +528,7 @@ class OpenAIObservationClient:
                     request_id=request_id,
                     response_text=response_text,
                 )
-            result = parse_ai_observation_response(
-                response_text,
-                notify_all=notify_all,
-            )
+            result = parse_ai_observation_response(response_text)
         except (AIResponseValidationError, TypeError, ValueError, AttributeError):
             return self._failure(
                 AIObservationTechnicalStatus.INVALID_RESPONSE,
@@ -561,7 +556,6 @@ class OpenAIObservationClient:
             "trusted_area_context": request.trusted_area_context,
             "prefilter": {
                 "matched_keywords": list(request.matched_keywords),
-                "notify_all": request.notify_all,
             },
         }
         return json.dumps(

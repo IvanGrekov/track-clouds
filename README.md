@@ -6,8 +6,8 @@
 2. перевіряє текст нового повідомлення або caption медіа;
 3. шукає ключові слова чи фрагменти слів;
 4. за потреби класифікує повідомлення як `accept` або `reject` через AI;
-5. надсилає повідомлення разом із результатом класифікації у Saved Messages або через
-   окремого Telegram-бота.
+5. надсилає повідомлення у Saved Messages або через окремого Telegram-бота, додаючи результат
+   класифікації лише тоді, коли AI observation справді виконувався.
 
 На відміну від періодичного опитування MCP, сервіс тримає одне підключення до Telegram і
 отримує `NewMessage` одразу після появи повідомлення. Він читає тільки ті діалоги, до яких
@@ -37,9 +37,11 @@
 - disabled-by-default типізована конфігурація AI observation, один поточний prompt bundle,
   бінарний контракт `accept`/`reject` та ізольований асинхронний OpenAI Responses client
   з bounded retries і нормалізованими технічними результатами;
-- observation інтегрований після всіх детермінованих фільтрів: і `accept`, і `reject`
-  формують та доставляють один alert із полями відповідного рішення, а технічна помилка
-  працює fail-open; один logical observation не повторюється через Telegram delivery retries;
+- observation інтегрований після всіх детермінованих фільтрів для keyword-matched
+  повідомлень: і `accept`, і `reject` формують та доставляють один alert із полями
+  відповідного рішення, а технічна помилка працює fail-open; `notify_all` повністю обходить
+  AI та використовує звичайний delivery path; один logical observation не повторюється
+  через Telegram delivery retries;
 - окрема opt-in команда `ai-check --live` для одноразового OpenAI smoke test
   без запуску Telegram, notifier-а чи subscriber database;
 - повністю офлайн unit та integration-style тести.
@@ -159,10 +161,13 @@ telegram-monitor check "Шукаємо Kubernetes-інженера"
 ## Конфігурація AI observation
 
 AI observation вимкнений за замовчуванням і не змінює чинну детерміновану фільтрацію. Після
-ввімкнення він виконує pre-delivery класифікацію, але в поточному observation mode не
-зупиняє доставку: і `accept`, і `reject` надсилаються для оцінювання якості класифікатора.
-Для ввімкнення додайте окрему таблицю **після всіх top-level settings і до першої**
-`[[sources]]` (це важливо через правила scoping у TOML):
+ввімкнення він виконує pre-delivery класифікацію лише для повідомлень, що пройшли keyword
+path. Повідомлення з джерел `notify_all = true` повністю обходять AI: OpenAI request не
+створюється, AI-блок до alert не додається, а повідомлення йде звичайним delivery path. Для
+keyword path поточний observation mode не зупиняє доставку: і `accept`, і `reject`
+надсилаються для оцінювання якості класифікатора. Для ввімкнення додайте окрему таблицю
+**після всіх top-level settings і до першої** `[[sources]]` (це важливо через правила
+scoping у TOML):
 
 ```toml
 [ai_observation]
@@ -240,14 +245,12 @@ trusted_area_context = "Львів та околиці"
 
 Важливі semantic mappings:
 
+- цей контракт застосовується лише до keyword path; `notify_all` не створює AI request або
+  AI-рішення;
 - `decision` має лише два значення: `accept` і `reject`;
 - для звичайного keyword path модель спочатку шукає явний критерій відхилення з private
   policy. Якщо жоден критерій не спрацював, результат за замовчуванням — `accept`;
 - відсутня або неоднозначна локація, подія чи час сама по собі не є причиною відхилення;
-- окреме правило `notify_all_source` — це назва правила, а не `reason_code`: коли
-  `prefilter.notify_all = true`, результат завжди має `decision = "accept"`;
-  `location` береться лише з тексту або `trusted_area_context`, `event` — лише з тексту,
-  обидва значення можуть бути відсутні, а `reason_code` і `reason` не заповнюються;
 - `location` і `event` належать до результату `accept`; `reason_code` і короткий `reason` —
   до результату `reject`. Усі чотири поля є optional на рівні застосунку, і порушення цього
   розподілу не переводить результат в `invalid_response`;
@@ -260,18 +263,20 @@ Strict Structured Outputs має окрему wire-вимогу: усі properti
 коли не стосуються рішення. Це технічне представлення не робить їх обов'язковими в
 доменному контракті.
 
-Коли observation увімкнений, notification worker викликає його лише після source/filter,
-deduplication та automatic-forward перевірок. Уся AI-операція має один end-to-end budget
-до 30 секунд. І `accept`, і `reject` формують та надсилають один alert до Saved Messages або
-bot subscribers, щоб результати класифікації можна було оцінювати на реальному потоці.
-Telegram retries повторюють вже сформований рядок і не створюють нового OpenAI request.
-Технічні помилки залишаються fail-open: вихідне повідомлення надсилається з технічним
-AI-блоком. Створення client-а не виконує live API probe; setup failure нормалізується як
-fail-open `api_error`.
+Коли observation увімкнений, notification worker викликає його для keyword path лише після
+source/filter, deduplication та automatic-forward перевірок. Уся AI-операція має один
+end-to-end budget до 30 секунд. І `accept`, і `reject` формують та надсилають один alert до
+Saved Messages або bot subscribers, щоб результати класифікації можна було оцінювати на
+реальному потоці. `notify_all` job одразу переходить до звичайного formatter/delivery без
+OpenAI request і без `AI analysis:`. Telegram retries повторюють вже сформований рядок і не
+створюють нового OpenAI request. Технічні помилки keyword path залишаються fail-open:
+вихідне повідомлення надсилається з технічним AI-блоком. Створення client-а не виконує live
+API probe; для keyword path setup failure нормалізується як fail-open `api_error`.
 
-Alert після семантичного рішення містить блок `AI analysis:` із `Decision` і загальним
-`Delay` у секундах з трьома знаками після крапки, наприклад `Delay: 0.842 s`. Для `accept`
-додаються наявні `Location` та `Event`, а для `reject` — наявні `Reason code` та `Reason`.
+Alert для keyword path після семантичного рішення містить блок `AI analysis:` із `Decision` і
+загальним `Delay` у секундах з трьома знаками після крапки, наприклад `Delay: 0.842 s`. Для
+`accept` додаються наявні `Location` та `Event`, а для `reject` — наявні `Reason code` та
+`Reason`.
 Усі auxiliary-поля optional і показуються лише за наявності. Model і token usage у Telegram
 не показуються, але залишаються доступними як безпечні runtime metadata для application
 logs. Технічний блок містить лише `Status` та однореченнєвий `Description`.
@@ -321,13 +326,12 @@ telegram-monitor ai-check --live --stdin \
 - `--trusted-area-context TEXT` — перевизначити глобальний trusted area для цього
   виклику;
 - `--matched-keyword TEXT` — додати prefilter match; flag можна повторювати;
-- `--notify-all` — змоделювати prefilter джерела з `notify_all = true`; цей path
-  завжди повертає `accept`, а CLI не додає `reason_code` і `reason`;
 - `--message-age-seconds N` — задати невід’ємний вік повідомлення; за
   замовчуванням `0`.
 
-Потрібно передати хоча б один `--matched-keyword` або `--notify-all`, щоб
-вхід відповідав production prefilter contract.
+Потрібно передати хоча б один `--matched-keyword`, щоб вхід відповідав production keyword
+path. `ai-check` не має `--notify-all`: production-повідомлення з `notify_all = true`
+взагалі не викликають AI, тому для них немає AI smoke-test path.
 
 Якщо `[ai_observation].enabled = false`, `--live` одноразово активує лише manual
 request у поточному процесі. Файл `config.toml` не змінюється, production observation
@@ -555,7 +559,8 @@ match/`notify_all=True` і відсутності негативного match
 outgoing-повідомлення. Повторний Telegram update з тим самим `(chat_id, message_id)` вдруге
 не логується. Переноси рядків і керувальні символи matched-тексту прибираються, а довгий текст
 скорочується. Автоматичне видалення користувача, який заблокував бота, має
-`reason=unreachable`.
+`reason=unreachable`. Для `notify_all` після `Match` ідуть звичайні delivery-логи, але не
+`AI observation completed/failed`, бо observer не викликається.
 
 Тимчасова Bot API помилка має рівень `WARNING` і містить `chat_id`, `error_code`,
 `retry_after` та номер спроби. Після вичерпання retries записуються два `ERROR`: детальна
@@ -583,34 +588,38 @@ response не додається. Message text, location, event, reason, excepti
 ```
 
 Тести не підключаються до Telegram чи OpenAI, не потребують реальних credentials і
-перевіряють nested TOML, межі значень, bundle validation, optional extension і стабільність `prompt_hash`,
-бінарний parsing, nullable wire-поля, формування Responses API request, retries, єдиний
-timeout budget і нормалізацію помилок, pipeline deduplication, formatter та lifecycle повністю
-офлайн через fake SDK/observer clients. `ai-check` тестується через injected fake
-client factory; pytest і CI ніколи не запускають `ai-check --live` проти реального API.
+перевіряють nested TOML, межі значень, bundle validation, optional extension і стабільність
+`prompt_hash`, бінарний parsing, nullable wire-поля, формування Responses API request,
+retries, єдиний timeout budget і нормалізацію помилок, pipeline deduplication,
+`notify_all` AI bypass, formatter та lifecycle повністю офлайн через fake SDK/observer
+clients. `ai-check` тестується через injected fake client factory; pytest і CI ніколи не
+запускають `ai-check --live` проти реального API.
 
 ## Межі цього MVP
 
 - Обробляються нові повідомлення, але не подальші редагування.
 - У `bot`-режимі і вхідні, і власні outgoing-повідомлення акаунта з monitored sources
-  проходять keyword-фільтр і, коли AI observation увімкнений, бінарну класифікацію. Alert
-  створюється після `accept`, `reject` або technical failure. У `saved_messages` режимі
-  outgoing і далі пропускаються, щоб повідомлення notifier-а не створили цикл
-  самосповіщень.
+  проходять детерміновані фільтри. Keyword-matched повідомлення за ввімкненого observation
+  проходять бінарну класифікацію, а `notify_all` повідомлення обходять AI та одразу
+  доставляються. Для keyword path alert створюється після `accept`, `reject` або technical
+  failure. У `saved_messages` режимі outgoing і далі пропускаються, щоб повідомлення
+  notifier-а не створили цикл самосповіщень.
 - Сервіс має працювати постійно. Він не робить history backfill і тому не гарантує доставку
   повідомлень, які з'явилися, поки процес був вимкнений.
 - Дедуплікація зберігається в RAM і скидається після рестарту.
 - Черги навмисно обмежені. Якщо накопичиться понад 1000 недоставлених цікавих повідомлень
   або понад 5000 updates під час старту, overflow буде явно записано в error log, але
   частина подій не буде доставлена. Розміри можна змінити в `MonitorConfig`.
-- Детерміновані фільтри визначають кандидатів для черги. У поточному observation mode AI
-  лише додає класифікацію: `accept` і `reject` обидва доставляються для аналізу, а technical
-  statuses так само не блокують повідомлення за fail-open правилом.
+- Детерміновані фільтри визначають кандидатів для черги. Для keyword path у поточному
+  observation mode AI лише додає класифікацію: `accept` і `reject` обидва доставляються для
+  аналізу, а technical statuses так само не блокують повідомлення за fail-open правилом.
+  `notify_all` bypass не створює AI request, рішення або AI-блок alert-а.
 - Один послідовний notification worker зберігає порядок, але повільний 30-секундний AI
   timeout може затримати наступні alerts і збільшити ризик queue overflow.
 - Для альбомів Telegram може надіслати кілька message updates; вони фільтруються та
   сповіщаються окремо.
 
-Гарантія одного AI observation діє в межах поточного in-memory deduplication window. Після
-рестарту те саме Telegram-повідомлення потенційно може бути класифіковане повторно; для
-абсолютної гарантії між рестартами потрібне окреме персистентне сховище processed message IDs.
+Для keyword path гарантія одного AI observation діє в межах поточного in-memory
+deduplication window. Після рестарту те саме Telegram-повідомлення потенційно може бути
+класифіковане повторно; для абсолютної гарантії між рестартами потрібне окреме персистентне
+сховище processed message IDs. `notify_all` повідомлення не класифікуються.
