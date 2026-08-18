@@ -90,17 +90,6 @@ def test_unrelated_content_is_a_reject_reason() -> None:
     assert result.reason_code is AIReasonCode.UNRELATED_CONTENT
 
 
-def test_notify_all_accepts_decision_without_a_reason_code() -> None:
-    result = parse_ai_observation_response({"decision": "accept"}, notify_all=True)
-
-    assert result == AIObservationResult(decision=AIDecision.ACCEPT)
-
-
-def test_notify_all_requires_accept_decision() -> None:
-    with pytest.raises(AIResponseValidationError, match="notify_all.*decision accept"):
-        parse_ai_observation_response({"decision": "reject"}, notify_all=True)
-
-
 def test_parse_ai_observation_response_accepts_json_text() -> None:
     result = parse_ai_observation_response(json.dumps(_accept_payload(), ensure_ascii=False))
 

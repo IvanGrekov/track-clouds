@@ -292,6 +292,9 @@ class TelegramMonitor:
                 self._queue.task_done()
 
     async def _observe(self, pending: _PendingNotification) -> AIObservationReport | None:
+        if pending.snapshot.notify_all:
+            return None
+
         observer = self._ai_observer
         if observer is None:
             return None

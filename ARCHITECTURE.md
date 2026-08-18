@@ -7,7 +7,8 @@ Telegram Keyword Monitor — це окремий event-driven Python-серві�
 1. входить у Telegram як звичайний користувач;
 2. слухає нові повідомлення тільки в налаштованих каналах і чатах;
 3. застосовує keyword-фільтри або правило `notify_all=True`;
-4. за потреби класифікує повідомлення через AI як `accept` або `reject`;
+4. за потреби класифікує keyword-matched повідомлення через AI як `accept` або `reject`, а
+   `notify_all` повідомлення пропускає повз AI;
 5. формує короткий alert із посиланням на оригінальне повідомлення;
 6. надсилає alert у Saved Messages або всім користувачам, які підписалися на окремого бота.
 
@@ -67,8 +68,8 @@ flowchart LR
     MATCH -->|"matched / notify_all"| DEDUP
     DEDUP --> QUEUE
     QUEUE --> WORKER
-    WORKER -->|"AI disabled"| ALERT
-    WORKER -->|"AI enabled"| AI
+    WORKER -->|"notify_all / AI disabled"| ALERT
+    WORKER -->|"keyword path + AI enabled"| AI
     AI -->|"ACCEPT / REJECT"| ALERT
     AI -->|"technical failure: fail-open"| ALERT
     ALERT -->|"saved_messages mode"| SAVED
@@ -117,9 +118,10 @@ flowchart LR
    - Saved Messages mode не потребує окремого background task;
    - bot mode викликає `getMe`, перевіряє відсутність webhook і запускає `getUpdates` polling.
 10. Запускається notification worker і обробляється bounded startup buffer.
-11. Worker для кожного accepted queue job виконує один logical AI observation. `accept` і
+11. Worker для keyword-matched queue job виконує один logical AI observation. `accept` і
     `reject` формують та доставляють по одному alert із decision-specific полями, а технічний
-    failure пропускає повідомлення далі за fail-open правилом.
+    failure пропускає повідомлення далі за fail-open правилом. `notify_all` job не викликає
+    observer і переходить безпосередньо до звичайного formatter/delivery path.
 12. Основна coroutine чекає відключення Telethon до сигналу або фатальної помилки bot polling.
 
 ## Контракт AI-відповіді
@@ -148,21 +150,18 @@ Conditional semantics не перетворюються на локальну cr
 
 Важливі semantic mappings:
 
+- AI-контракт застосовується лише до keyword path; `notify_all` не створює request або
+  AI-рішення;
 - для звичайного keyword path модель перевіряє лише наявність явного reject-критерію з
   private policy. Якщо такого критерію немає, рішення за замовчуванням — `accept`;
 - неповна, неоднозначна або історична, але потенційно корисна інформація приймається;
-- `notify_all_source` є назвою окремого правила, а не `reason_code`: для
-  `prefilter.notify_all = true` воно завжди дає `decision = "accept"`; `reason_code` і
-  `reason` залишаються `null`, а `location` та `event` заповнюються лише коли їх можна
-  безпечно вилучити з дозволених вхідних даних;
 - `accept` і `reject` передаються formatter-у та продовжують Telegram delivery; цей
   observation mode дає змогу оцінити якість класифікації на реальному потоці.
 
 `parse_ai_observation_response()` виконує локальну перевірку навіть після strict Structured
-Output: JSON decode, JSON object та обов'язкове бінарне `decision`. Для
-`prefilter.notify_all = true` єдина додаткова вимога до рішення — `accept`. Некоректний JSON,
-не-object payload, відсутнє/невідоме рішення або `reject` у notify-all path завершується
-`AIResponseValidationError`. Проблема лише в optional полях не є invalid response.
+Output: JSON decode, JSON object та обов'язкове бінарне `decision`. Некоректний JSON,
+не-object payload або відсутнє/невідоме рішення завершується `AIResponseValidationError`.
+Проблема лише в optional полях не є invalid response. `notify_all` до parser-а не доходить.
 
 Технічний результат представлений окремим enum `AIObservationTechnicalStatus`: `timeout`,
 `rate_limited`, `refusal`, `api_error` або `invalid_response`. Жоден із цих статусів не є
@@ -212,9 +211,10 @@ Incomplete через content filter стає `refusal`; інший неповн
 
 `telegram-monitor ai-check --live` — окремий one-shot шлях до ізольованого
 Responses client-а. Він приймає message text як positional argument або через
-`--stdin`, а також optional trusted area, matched keywords, `notify_all` і message age.
-Команда використовує configured model, поточні prompt bundle,
-private policy і schema, timeout та retry policy, але не викликає `run_monitor()`.
+`--stdin`, optional trusted area й message age, а також один або кілька обов'язкових matched
+keywords. Опції `--notify-all` немає, оскільки production `notify_all` path не викликає AI.
+Команда використовує configured model, поточні prompt bundle, private policy і schema,
+timeout та retry policy, але не викликає `run_monitor()`.
 
 ```text
 CLI
@@ -276,12 +276,13 @@ CLI serializer пропускає auxiliary keys із відсутніми зн�
 12. Створюється immutable queue job із `MessageSnapshot` і source context; handler не робить
     OpenAI network awaits.
 13. Job без блокуючих network calls додається в bounded `asyncio.Queue`.
-14. Один background worker починає спільний deadline до 30 секунд і передає залишок budget
-    ізольованому OpenAI client-у.
-15. `accept` і `reject` передаються `render_notification()`, який створює один plain-text
-    alert до Telegram limit 4096 символів. Блок `AI analysis:` містить `Decision`, `Delay`
-    у секундах і наявні поля відповідного рішення: `Location`/`Event` для `accept` або
-    `Reason code`/`Reason` для `reject`.
+14. Для `notify_all` job worker не запускає observer і одразу передає вихідне повідомлення
+    звичайному formatter-у. Для keyword path один background worker починає спільний
+    deadline до 30 секунд і передає залишок budget ізольованому OpenAI client-у.
+15. `accept` і `reject` keyword path передаються `render_notification()`, який створює один
+    plain-text alert до Telegram limit 4096 символів. Блок `AI analysis:` містить `Decision`,
+    `Delay` у секундах і наявні поля відповідного рішення: `Location`/`Event` для `accept`
+    або `Reason code`/`Reason` для `reject`.
 16. Technical status також передається formatter-у за fail-open правилом; його блок містить
     лише `Status` і `Description`, а вихідне повідомлення все одно доставляється.
 17. Dedup key commit-иться до Telegram transport retries. Усі retries і bot subscribers
@@ -470,6 +471,9 @@ AI observation failed (status=..., model=..., message=chat/message, elapsed_seco
 AI observation failed (status=invalid_response, ..., ai_response=...)
 ```
 
+`notify_all` повідомлення не створюють `AI observation completed/failed`: після загального
+`Match` вони переходять до звичайних delivery-логів.
+
 Retryable Bot API delivery errors записуються як `WARNING` з `chat_id`, `error_code`,
 `retry_after` і номером спроби. Остаточна помилка одержувача та partial/all broadcast failure
 записуються як `ERROR`; лог також попереджає, що durable retry не запланований. Alert text,
@@ -536,7 +540,8 @@ Telethon events, dialogs і client lifecycle перевіряються fake-о�
 - total-attempt semantics, bounded backoff і один caller-supplied timeout budget;
 - refusal, rate limit, quota, timeout, API і invalid-response normalization;
 - observer timeout, cancellation і спільний 30-секундний deadline;
-- один logical observation попри duplicate updates і Telegram delivery retries;
+- один logical observation keyword path попри duplicate updates і Telegram delivery retries;
+- повний AI bypass для `notify_all` зі звичайним formatter/delivery path;
 - delivery після `accept`, `reject` або technical failure і decision-specific AI-поля alert;
 - AI formatter labels, conditional fields, technical descriptions та Telegram limit 4096;
 - fail-open observer setup і коректне закриття lifecycle resources;
@@ -565,9 +570,10 @@ ruff format --check .
   відновлюється після рестарту.
 - Message edits не обробляються.
 - Albums можуть створювати кілька alerts.
-- Keyword matching визначає кандидатів для черги; ввімкнений AI observation класифікує їх,
-  але в поточному observation mode і `accept`, і `reject` доставляються для аналізу, тоді як
-  technical statuses залишаються fail-open.
+- Keyword matching визначає кандидатів для черги; ввімкнений AI observation класифікує
+  keyword path, але в поточному observation mode і `accept`, і `reject` доставляються для
+  аналізу, тоді як technical statuses залишаються fail-open. `notify_all` повністю обходить
+  AI й використовує звичайний delivery path.
 - Один послідовний worker зберігає порядок, але довгий AI timeout затримує наступні jobs;
   bounded concurrency можна додати окремо після вимірювання реального навантаження.
 - Перші 10 користувачів бота визначаються за принципом first come, first served; allowlist або

@@ -159,6 +159,7 @@ def test_repository_prompt_bundle_is_valid_with_environment_policy(
     assert bundle.policy_prompt == "Private test policy.\n"
     assert "unrelated_content" in bundle.system_prompt
     assert all(reason.value in bundle.system_prompt for reason in AIReasonCode)
+    assert "notify_all" not in bundle.system_prompt
     schema = bundle.response_format["schema"]
     assert isinstance(schema, dict)
     properties = schema["properties"]
@@ -597,7 +598,7 @@ def test_load_prompt_bundle_rejects_non_reject_reason_code(tmp_path: Path) -> No
     assert isinstance(properties, dict)
     reason_code = properties["reason_code"]
     assert isinstance(reason_code, dict)
-    reason_code["enum"].insert(-1, "notify_all_source")
+    reason_code["enum"].insert(-1, "meets_all_criteria")
     _write_bundle(bundle_path, response_format=response_format)
 
     with pytest.raises(ConfigurationError, match="typed AI response contract"):

@@ -101,19 +101,8 @@ def _normalize_optional_reason_code(value: object) -> AIReasonCode | None:
         return None
 
 
-def _validate_semantics(
-    result: AIObservationResult,
-    *,
-    notify_all: bool,
-) -> None:
-    if notify_all and result.decision is not AIDecision.ACCEPT:
-        raise AIResponseValidationError("AI notify_all response requires decision accept")
-
-
 def parse_ai_observation_response(
     payload: object,
-    *,
-    notify_all: bool = False,
 ) -> AIObservationResult:
     """Parse one Structured Outputs payload, requiring only a valid decision.
 
@@ -146,12 +135,10 @@ def parse_ai_observation_response(
         reason_code = _normalize_optional_reason_code(payload.get("reason_code"))
         reason = _normalize_optional_text(payload.get("reason"))
 
-    result = AIObservationResult(
+    return AIObservationResult(
         decision=decision,
         location=location,
         event=event,
         reason_code=reason_code,
         reason=reason,
     )
-    _validate_semantics(result, notify_all=notify_all)
-    return result

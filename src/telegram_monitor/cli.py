@@ -126,11 +126,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="prefilter keyword that matched; repeat for multiple values",
     )
     ai_check.add_argument(
-        "--notify-all",
-        action="store_true",
-        help="represent a source configured with notify_all=true",
-    )
-    ai_check.add_argument(
         "--trusted-area-context",
         help="trusted area context; defaults to ai_observation.default_trusted_area_context",
     )
@@ -292,8 +287,8 @@ def _read_ai_check_input(
         for keyword in args.matched_keywords
         if isinstance(keyword, str) and keyword.strip()
     )
-    if not matched_keywords and not args.notify_all:
-        parser.error("ai-check requires --matched-keyword or --notify-all")
+    if not matched_keywords:
+        parser.error("ai-check requires --matched-keyword")
     return text, matched_keywords
 
 
@@ -373,7 +368,6 @@ async def _run_ai_check(
     config: MonitorConfig,
     *,
     matched_keywords: tuple[str, ...],
-    notify_all: bool,
     trusted_area_context: str | None,
     message_age_seconds: int,
     client_factory: _AIClientFactory = build_openai_observation_client,
@@ -397,7 +391,6 @@ async def _run_ai_check(
             message_age_seconds=message_age_seconds,
             trusted_area_context=context,
             matched_keywords=matched_keywords,
-            notify_all=notify_all,
         )
     except (AttributeError, OverflowError, TypeError, ValueError) as error:
         raise ConfigurationError("Invalid ai-check input") from error
@@ -475,7 +468,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                     text,
                     load_config(),
                     matched_keywords=matched_keywords,
-                    notify_all=args.notify_all,
                     trusted_area_context=args.trusted_area_context,
                     message_age_seconds=args.message_age_seconds,
                 )

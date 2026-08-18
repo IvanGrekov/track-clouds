@@ -11,8 +11,8 @@ bot_subscriber_limit = 10
 timezone = "Europe/Kyiv"
 
 # Optional AI observation settings. When enabled, binary classification runs after deterministic
-# filters. ACCEPT, REJECT and technical failures all continue to Telegram delivery so the
-# classifier can be evaluated on the real message stream.
+# filters only for keyword-matched messages. notify_all messages bypass AI and use the regular
+# delivery path. ACCEPT, REJECT and technical failures all continue to Telegram delivery.
 [ai_observation]
 enabled = false
 model = "gpt-5.4-nano-2026-03-17"
@@ -36,7 +36,7 @@ max_output_tokens = 800
 # Keep false so Responses API does not retain responses for later retrieval.
 store_responses = false
 
-# Notify about every post in a public channel.
+# Notify about every post in a public channel; these messages bypass AI observation.
 [[sources]]
 peer = "@example_channel"
 notify_all = true

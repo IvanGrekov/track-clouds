@@ -1,10 +1,8 @@
 .git
 .env
 config.toml
-policy-prompt.txt
-policy-prompt-extended-examples.txt
-prompts/*/policy-prompt.txt
-prompts/*/policy-prompt-extended-examples.txt
+policy-prompt*.txt
+prompts/*/policy-prompt*.txt
 .venv
 *.session
 *.session-journal
