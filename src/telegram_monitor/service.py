@@ -30,6 +30,7 @@ class _PendingNotification:
     key: MessageKey
     snapshot: MessageSnapshot = field(repr=False)
     trusted_area_context: str | None = field(default=None, repr=False)
+    skip_ai: bool = False
 
 
 class TelegramMonitor:
@@ -206,6 +207,7 @@ class TelegramMonitor:
                 key=key,
                 snapshot=snapshot,
                 trusted_area_context=self._config.trusted_area_context_for(source.rule),
+                skip_ai=source.rule.skip_ai,
             )
             try:
                 self._queue.put_nowait(pending)
@@ -292,7 +294,7 @@ class TelegramMonitor:
                 self._queue.task_done()
 
     async def _observe(self, pending: _PendingNotification) -> AIObservationReport | None:
-        if pending.snapshot.notify_all:
+        if pending.snapshot.notify_all or pending.skip_ai:
             return None
 
         observer = self._ai_observer

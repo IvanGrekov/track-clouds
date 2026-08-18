@@ -28,6 +28,7 @@ label = "Updates"
 peer = -1001234567890
 keywords = [" release ", "incident"]
 keywords_to_skip = ["spam"]
+skip_ai = true
 """,
     )
 
@@ -37,9 +38,11 @@ keywords_to_skip = ["spam"]
     assert config.bot_subscriber_limit == 7
     assert config.sources[0].peer == "@updates"
     assert config.sources[0].notify_all is True
+    assert config.sources[0].skip_ai is False
     assert config.sources[1].peer == -1001234567890
     assert config.sources[1].keywords == ("release", "incident")
     assert config.sources[1].keywords_to_skip == ("spam",)
+    assert config.sources[1].skip_ai is True
     assert config.ai_observation.enabled is False
     assert config.ai_observation.prompt_bundle_path == (tmp_path / "prompts").resolve()
     assert config.ai_observation.policy_prompt_path == (tmp_path / "policy-prompt.txt").resolve()
@@ -253,4 +256,20 @@ def test_load_config_requires_sources_tables(tmp_path: Path) -> None:
     _write_config(path, 'notification_mode = "saved_messages"')
 
     with pytest.raises(ConfigurationError, match=r"\[\[sources\]\]"):
+        load_config(path)
+
+
+def test_load_config_rejects_non_boolean_source_skip_ai(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    _write_config(
+        path,
+        """
+[[sources]]
+peer = "@updates"
+keywords = ["incident"]
+skip_ai = 1
+""",
+    )
+
+    with pytest.raises(ConfigurationError, match="skip_ai must be True or False"):
         load_config(path)

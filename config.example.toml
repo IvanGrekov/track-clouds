@@ -11,8 +11,9 @@ bot_subscriber_limit = 10
 timezone = "Europe/Kyiv"
 
 # Optional AI observation settings. When enabled, binary classification runs after deterministic
-# filters only for keyword-matched messages. notify_all messages bypass AI and use the regular
-# delivery path. ACCEPT, REJECT and technical failures all continue to Telegram delivery.
+# filters only for eligible keyword-matched messages. notify_all and per-source skip_ai messages
+# bypass AI and use the regular delivery path. Unlike notify_all, skip_ai does not bypass the
+# positive keyword requirement. ACCEPT, REJECT and technical failures continue to delivery.
 [ai_observation]
 enabled = false
 model = "gpt-5.4-nano-2026-03-17"
@@ -50,6 +51,15 @@ keywords_to_skip = ["http", "@"]
 label = "Example discussion"
 # Overrides ai_observation.default_trusted_area_context for this source.
 trusted_area_context = "Львів та околиці"
+
+# skip_ai defaults to false. Set it to true to keep deterministic keyword/keywords_to_skip
+# filtering but bypass AI for this source.
+[[sources]]
+peer = "@trusted_alerts"
+keywords = ["incident", "реліз"]
+keywords_to_skip = ["resolved"]
+skip_ai = true
+label = "Trusted alerts"
 
 # Private groups and channels have no username. Use the ID from `list-chats`:
 # [[sources]]

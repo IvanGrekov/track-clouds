@@ -590,6 +590,39 @@ async def test_mixed_sources_observe_only_non_notify_all_messages() -> None:
 
 
 @pytest.mark.asyncio
+async def test_skip_ai_source_preserves_keyword_filters_and_normal_delivery() -> None:
+    discussion_id = -1001111111111
+    client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])
+    config = MonitorConfig(
+        sources=(
+            SourceRule(
+                peer="@discussion",
+                keywords=("k8s",),
+                keywords_to_skip=("spam",),
+                skip_ai=True,
+            ),
+        ),
+        timezone="UTC",
+        ai_observation=AIObservationConfig(enabled=True),
+    )
+    notifier = FakeNotifier()
+    observer = FakeObserver([])
+    monitor = TelegramMonitor(client, config, notifier, ai_observer=observer)
+    await monitor.prepare()
+
+    await monitor.handle_event(FakeEvent(discussion_id, 68, "ordinary unmatched update"))
+    await monitor.handle_event(FakeEvent(discussion_id, 69, "k8s spam advertisement"))
+    await monitor.handle_event(FakeEvent(discussion_id, 70, "k8s valid road update"))
+    await monitor._queue.join()
+
+    assert observer.calls == []
+    assert len(notifier.sent) == 1
+    assert "k8s valid road update" in notifier.sent[0]
+    assert "AI analysis:" not in notifier.sent[0]
+    await monitor.close()
+
+
+@pytest.mark.asyncio
 async def test_failed_delivery_does_not_allow_duplicate_to_repeat_observation() -> None:
     discussion_id = -1001111111111
     client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])

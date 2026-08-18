@@ -141,6 +141,8 @@ class SourceRule:
     dialog ID printed by ``telegram-monitor list-chats``. Keyword matching uses
     case-insensitive substring matching, so a fragment may match part of a word.
     ``keywords_to_skip`` is checked after the positive rule and takes precedence.
+    ``skip_ai`` bypasses AI observation only after these deterministic filters accept
+    the message; it does not replace keyword filtering.
     """
 
     peer: ChatRef
@@ -149,6 +151,7 @@ class SourceRule:
     label: str | None = None
     keywords_to_skip: tuple[str, ...] | list[str] = ()
     trusted_area_context: str | None = None
+    skip_ai: bool = False
 
     def __post_init__(self) -> None:
         if isinstance(self.peer, bool) or not isinstance(self.peer, (int, str)):
@@ -178,6 +181,8 @@ class SourceRule:
 
         if not isinstance(self.notify_all, bool):
             raise ConfigurationError("notify_all must be True or False")
+        if not isinstance(self.skip_ai, bool):
+            raise ConfigurationError("skip_ai must be True or False")
         if not self.notify_all and not cleaned_keywords:
             raise ConfigurationError(
                 f"Source {self.peer!r} needs at least one keyword or notify_all=True"

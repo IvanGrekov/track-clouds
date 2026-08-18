@@ -206,7 +206,9 @@ def test_ai_check_requires_keyword_before_configuration(
     assert "requires --matched-keyword" in capsys.readouterr().err
 
 
-def test_ai_check_rejects_removed_notify_all_flag_before_configuration(
+@pytest.mark.parametrize("flag", ["--notify-all", "--skip-ai"])
+def test_ai_check_rejects_source_bypass_flags_before_configuration(
+    flag: str,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -217,10 +219,10 @@ def test_ai_check_rejects_removed_notify_all_flag_before_configuration(
     )
 
     with pytest.raises(SystemExit) as raised:
-        cli.main(["ai-check", "--live", "--notify-all", "message text"])
+        cli.main(["ai-check", "--live", flag, "message text"])
 
     assert raised.value.code == 2
-    assert "unrecognized arguments: --notify-all" in capsys.readouterr().err
+    assert f"unrecognized arguments: {flag}" in capsys.readouterr().err
 
 
 def test_main_accepts_stdin_and_keyword_without_constructing_telegram(
