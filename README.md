@@ -192,7 +192,7 @@ operation_timeout_seconds = 30
 request_attempts = 2
 retry_base_seconds = 0.5
 retry_max_seconds = 2.0
-reasoning_effort = "none"
+reasoning_effort = "low"
 max_output_tokens = 800
 store_responses = false
 

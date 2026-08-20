@@ -31,7 +31,7 @@ class AIObservationConfig:
     request_attempts: int = 2
     retry_base_seconds: float = 0.5
     retry_max_seconds: float = 2.0
-    reasoning_effort: AIReasoningEffort = "none"
+    reasoning_effort: AIReasoningEffort = "low"
     max_output_tokens: int = 800
     store_responses: bool = False
     policy_prompt_extended_examples_path: str | Path = Path("policy-prompt-extended-examples.txt")
