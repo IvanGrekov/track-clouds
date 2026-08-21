@@ -18,6 +18,12 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      - type: bind
+        source: ./policy-prompt-extended-examples.txt
+        target: /app/policy-prompt-extended-examples.txt
+        read_only: true
+        bind:
+          create_host_path: false
       - telegram-monitor-state:/app/.state
 
 volumes:
