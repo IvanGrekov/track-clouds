@@ -107,6 +107,58 @@ trusted_area_context = " Львівська область "
     assert config.sources[0].trusted_area_context == "Львівська область"
 
 
+def test_load_config_builds_quiet_hours_config(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    _write_config(
+        path,
+        """
+[quiet_hours]
+enabled = true
+start = "22:30"
+end = "04:00"
+timezone = "UTC"
+
+[[sources]]
+peer = "@updates"
+notify_all = true
+""",
+    )
+
+    config = load_config(path)
+
+    assert config.quiet_hours.enabled is True
+    assert config.quiet_hours.start == "22:30"
+    assert config.quiet_hours.end == "04:00"
+    assert config.quiet_hours.timezone == "UTC"
+
+
+def test_quiet_hours_environment_overrides_apply_for_runtime_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_config(
+        tmp_path / "config.toml",
+        """
+[[sources]]
+peer = "@updates"
+notify_all = true
+""",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MONITOR_QUIET_HOURS_ENABLED", "true")
+    monkeypatch.setenv("MONITOR_QUIET_HOURS_START", "22:30")
+    monkeypatch.setenv("MONITOR_QUIET_HOURS_END", "04:00")
+    monkeypatch.setenv("MONITOR_QUIET_HOURS_TIMEZONE", "UTC")
+    monkeypatch.setenv("MONITOR_QUIET_HOURS_BACKLOG", "discard")
+
+    config = load_config()
+
+    assert config.quiet_hours.enabled is True
+    assert config.quiet_hours.start == "22:30"
+    assert config.quiet_hours.end == "04:00"
+    assert config.quiet_hours.timezone == "UTC"
+
+
 def test_load_config_keeps_absolute_ai_prompt_paths(tmp_path: Path) -> None:
     absolute_bundle = (tmp_path / "shared-prompts").resolve()
     absolute_policy = (tmp_path / "private" / "policy-prompt.txt").resolve()

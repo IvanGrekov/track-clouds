@@ -10,6 +10,14 @@ bot_subscriber_limit = 10
 
 timezone = "Europe/Kyiv"
 
+# Optional daily hard pause. While enabled, Telegram and OpenAI clients are closed, unfinished
+# alerts are discarded, and messages/commands created during the interval are never replayed.
+[quiet_hours]
+enabled = false
+start = "22:30"
+end = "04:00"
+timezone = "UTC"
+
 # Optional AI observation settings. When enabled, binary classification runs after deterministic
 # filters only for eligible keyword-matched messages. notify_all and per-source skip_ai messages
 # bypass AI and use the regular delivery path. Unlike notify_all, skip_ai does not bypass the

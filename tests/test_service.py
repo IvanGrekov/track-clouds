@@ -16,7 +16,13 @@ from telegram_monitor.ai_models import (
     AIReasonCode,
 )
 from telegram_monitor.ai_observer import AIObservationReport
-from telegram_monitor.models import AIObservationConfig, MessageSnapshot, MonitorConfig, SourceRule
+from telegram_monitor.models import (
+    AIObservationConfig,
+    MessageSnapshot,
+    MonitorConfig,
+    QuietHoursConfig,
+    SourceRule,
+)
 from telegram_monitor.notifier import NotificationError
 from telegram_monitor.openai_client import AIObservationTokenUsage
 from telegram_monitor.service import TelegramMonitor
@@ -226,6 +232,44 @@ async def test_event_flow_filters_enqueues_notifies_and_deduplicates() -> None:
     await monitor.close()
     assert client.removed is True
     assert notifier.closed is True
+
+
+@pytest.mark.asyncio
+async def test_replayed_quiet_hours_messages_are_discarded_before_ai_or_delivery() -> None:
+    discussion_id = -1001111111111
+    client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])
+    notifier = FakeNotifier()
+    observer = FakeObserver([_success_report()])
+    config = MonitorConfig(
+        sources=(SourceRule(peer="@discussion", keywords=("k8s",)),),
+        timezone="UTC",
+        quiet_hours=QuietHoursConfig(enabled=True),
+        ai_observation=AIObservationConfig(enabled=True),
+    )
+    monitor = TelegramMonitor(
+        client,
+        config,
+        notifier,
+        ai_observer=observer,
+        accept_events_since=datetime(2026, 8, 23, 4, 0, tzinfo=UTC),
+    )
+    await monitor.prepare()
+
+    overnight = FakeEvent(discussion_id, 10, "k8s overnight")
+    overnight.date = datetime(2026, 8, 22, 23, 15, tzinfo=UTC)
+    cancelled_before_pause = FakeEvent(discussion_id, 9, "k8s cancelled before pause")
+    cancelled_before_pause.date = datetime(2026, 8, 22, 22, 29, tzinfo=UTC)
+    active = FakeEvent(discussion_id, 11, "k8s active")
+    active.date = datetime(2026, 8, 23, 4, 0, tzinfo=UTC)
+    await monitor.handle_event(cancelled_before_pause)
+    await monitor.handle_event(overnight)
+    await monitor.handle_event(active)
+    await monitor._queue.join()
+
+    assert [snapshot.message_id for snapshot, _ in observer.calls] == [11]
+    assert len(notifier.sent) == 1
+    assert "k8s active" in notifier.sent[0]
+    await monitor.close()
 
 
 @pytest.mark.asyncio
@@ -965,3 +1009,49 @@ async def test_shutdown_wait_exceeds_one_complete_ai_budget(
     assert observed_timeouts == [11.0]
     assert len(notifier.sent) == 1
     assert "Status: timeout" in notifier.sent[0]
+
+
+@pytest.mark.asyncio
+async def test_quiet_hours_shutdown_cancels_in_flight_ai_and_discards_queue() -> None:
+    discussion_id = -1001111111111
+    client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])
+    config = MonitorConfig(
+        sources=(SourceRule(peer="@discussion", keywords=("k8s",)),),
+        timezone="UTC",
+        ai_observation=AIObservationConfig(enabled=True),
+    )
+    notifier = FakeNotifier()
+    first_started = asyncio.Event()
+    observation_cancelled = asyncio.Event()
+
+    class BlockingObserver:
+        async def observe(
+            self,
+            snapshot: MessageSnapshot,
+            *,
+            trusted_area_context: str | None,
+        ) -> AIObservationReport:
+            del snapshot, trusted_area_context
+            first_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                observation_cancelled.set()
+                raise
+            raise AssertionError("unreachable")
+
+        async def close(self) -> None:
+            return None
+
+    monitor = TelegramMonitor(client, config, notifier, ai_observer=BlockingObserver())
+    await monitor.prepare()
+    await monitor.handle_event(FakeEvent(discussion_id, 71, "k8s in flight"))
+    await first_started.wait()
+    await monitor.handle_event(FakeEvent(discussion_id, 72, "k8s queued"))
+
+    await monitor.close(discard_pending=True)
+    await asyncio.wait_for(monitor._queue.join(), timeout=0.1)
+
+    assert observation_cancelled.is_set()
+    assert notifier.sent == []
+    assert notifier.closed is True
