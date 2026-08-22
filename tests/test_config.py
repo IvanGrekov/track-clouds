@@ -72,7 +72,7 @@ operation_timeout_seconds = 25
 request_attempts = 3
 retry_base_seconds = 1
 retry_max_seconds = 4
-reasoning_effort = "low"
+reasoning_effort = "medium"
 max_output_tokens = 512
 store_responses = false
 
@@ -101,7 +101,7 @@ trusted_area_context = " Львівська область "
     assert config.ai_observation.request_attempts == 3
     assert config.ai_observation.retry_base_seconds == 1.0
     assert config.ai_observation.retry_max_seconds == 4.0
-    assert config.ai_observation.reasoning_effort == "low"
+    assert config.ai_observation.reasoning_effort == "medium"
     assert config.ai_observation.max_output_tokens == 512
     assert config.ai_observation.store_responses is False
     assert config.sources[0].trusted_area_context == "Львівська область"

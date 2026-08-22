@@ -39,8 +39,8 @@
   бінарний контракт `accept`/`reject` та ізольований асинхронний OpenAI Responses client
   з bounded retries і нормалізованими технічними результатами;
 - observation інтегрований після всіх детермінованих фільтрів для keyword-matched
-  повідомлень: і `accept`, і `reject` формують та доставляють один alert із полями
-  відповідного рішення, а технічна помилка працює fail-open; `notify_all` і per-source
+  повідомлень: `accept` доставляє alert, `reject` пропускає Telegram delivery і записує весь
+  сформований alert як `WARNING`, а технічна помилка працює fail-open; `notify_all` і per-source
   `skip_ai = true` повністю обходять AI та використовують звичайний delivery path; один
   logical observation не повторюється через Telegram delivery retries;
 - окрема opt-in команда `ai-check --live` для одноразового OpenAI smoke test
@@ -175,8 +175,8 @@ path джерела з `skip_ai = false`. Повідомлення з `notify_al
 повністю обходять AI: OpenAI request не створюється, AI-блок до alert не додається, а
 повідомлення йде звичайним delivery path. Різниця в тому, що `notify_all` пропускає вимогу
 позитивного keyword match, тоді як `skip_ai` діє тільки після звичайних `keywords` і
-`keywords_to_skip`. Для AI-eligible keyword path поточний observation mode не зупиняє
-доставку: і `accept`, і `reject` надсилаються для оцінювання якості класифікатора. Для
+`keywords_to_skip`. Для AI-eligible keyword path `accept` продовжує доставку, а `reject`
+зупиняє її та записує сформований alert у warning log. Для
 ввімкнення додайте окрему таблицю **після всіх top-level settings і до першої**
 `[[sources]]` (це важливо через правила scoping у TOML):
 
@@ -192,7 +192,7 @@ operation_timeout_seconds = 30
 request_attempts = 2
 retry_base_seconds = 0.5
 retry_max_seconds = 2.0
-reasoning_effort = "low"
+reasoning_effort = "medium"
 max_output_tokens = 800
 store_responses = false
 
@@ -279,9 +279,10 @@ Strict Structured Outputs має окрему wire-вимогу: усі properti
 
 Коли observation увімкнений, notification worker викликає його для keyword path із
 `skip_ai = false` лише після source/filter, deduplication та automatic-forward перевірок.
-Уся AI-операція має один end-to-end budget до 30 секунд. І `accept`, і `reject` формують та
-надсилають один alert до Saved Messages або bot subscribers, щоб результати класифікації
-можна було оцінювати на реальному потоці. `notify_all` та `skip_ai = true` jobs одразу
+Уся AI-операція має один end-to-end budget до 30 секунд. `accept` формує та надсилає один
+alert до Saved Messages або bot subscribers. `reject` формує той самий повний alert, але не
+надсилає його в Telegram: однорядкова безпечна версія записується як `WARNING` у `stderr`,
+тому Railway показує її як warning/error stream. `notify_all` та `skip_ai = true` jobs одразу
 переходять до звичайного formatter/delivery без OpenAI request і без `AI analysis:`.
 Telegram retries повторюють вже сформований рядок і не створюють нового OpenAI request.
 Технічні помилки AI-eligible keyword path залишаються fail-open: вихідне повідомлення
@@ -562,6 +563,7 @@ Bot alert delivered to 3/3 subscriber(s)
 Bot alert delivery incomplete (status=partial, delivered=2, failed=1, total=3, failed_chat_ids=456)
 AI observation completed (decision=accept, elapsed_seconds=0.842, ...)
 AI observation completed (decision=reject, reason_code=spam_or_scam, ...)
+AI rejected notification; skipped Telegram delivery (message=chat/message, alert=...)
 AI observation failed (status=timeout, model=gpt-5.4-nano-2026-03-17, elapsed_seconds=30.000, ...)
 AI observation failed (status=invalid_response, ..., ai_response=...)
 ```
@@ -584,8 +586,9 @@ delivery-логи, але не `AI observation completed/failed`, бо observer 
 записуються.
 
 Семантичний AI log містить `decision`, optional reject-only `reason_code`, timing у секундах
-та безпечні metadata. Після `accept` і `reject` Telegram delivery продовжується однаково;
-decision-specific auxiliary-поля вже входять у сформований alert, якщо вони наявні.
+та безпечні metadata. Після `accept` Telegram delivery продовжується. Після `reject` delivery
+не викликається, а весь сформований alert — message text, source, time, matches, AI reason і
+посилання — записується одним санітизованим `WARNING`-рядком у `stderr` для Railway.
 Технічний результат записується на рівні `ERROR`, але саме повідомлення проходить далі за
 fail-open правилом.
 Для `invalid_response` запис також містить однорядковий, обмежений за довжиною
@@ -617,8 +620,9 @@ SDK/observer clients. `ai-check` тестується через injected fake c
   проходять детерміновані фільтри. Keyword-matched повідомлення за ввімкненого observation
   проходять бінарну класифікацію, якщо source не має `skip_ai = true`. `notify_all` і
   `skip_ai` повідомлення обходять AI та одразу доставляються; `skip_ai` на відміну від
-  `notify_all` не скасовує keyword-вимогу. Для AI-eligible keyword path alert створюється
-  після `accept`, `reject` або technical failure. У `saved_messages` режимі outgoing і далі
+  `notify_all` не скасовує keyword-вимогу. Для AI-eligible keyword path `accept` або technical
+  failure доставляє alert, а `reject` лише записує його як `WARNING`. У `saved_messages`
+  режимі outgoing і далі
   пропускаються, щоб повідомлення notifier-а не створили цикл самосповіщень.
 - Сервіс має працювати постійно. Він не робить history backfill і тому не гарантує доставку
   повідомлень, які з'явилися, поки процес був вимкнений.
@@ -627,9 +631,9 @@ SDK/observer clients. `ai-check` тестується через injected fake c
   або понад 5000 updates під час старту, overflow буде явно записано в error log, але
   частина подій не буде доставлена. Розміри можна змінити в `MonitorConfig`.
 - Детерміновані фільтри визначають кандидатів для черги. Для keyword path із
-  `skip_ai = false` у поточному observation mode AI лише додає класифікацію: `accept` і
-  `reject` обидва доставляються для аналізу, а technical statuses так само не блокують
-  повідомлення за fail-open правилом. `notify_all` і `skip_ai = true` bypass не створюють
+  `skip_ai = false` рішення `accept` доставляється, `reject` іде лише у warning log, а
+  technical statuses не блокують повідомлення за fail-open правилом. `notify_all` і
+  `skip_ai = true` bypass не створюють
   AI request, рішення або AI-блок alert-а.
 - Один послідовний notification worker зберігає порядок, але повільний 30-секундний AI
   timeout може затримати наступні alerts і збільшити ризик queue overflow.

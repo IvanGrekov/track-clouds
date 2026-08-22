@@ -32,7 +32,7 @@ request_attempts = 2
 retry_base_seconds = 0.5
 retry_max_seconds = 2.0
 # Allowed: none, low, medium, high, xhigh.
-reasoning_effort = "low"
+reasoning_effort = "medium"
 max_output_tokens = 800
 # Keep false so Responses API does not retain responses for later retrieval.
 store_responses = false

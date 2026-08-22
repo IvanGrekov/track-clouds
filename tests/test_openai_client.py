@@ -96,7 +96,7 @@ def _config(**overrides: object) -> AIObservationConfig:
         "request_attempts": 2,
         "retry_base_seconds": 0,
         "retry_max_seconds": 0,
-        "reasoning_effort": "low",
+        "reasoning_effort": "medium",
         "max_output_tokens": 800,
         "store_responses": False,
     }
@@ -347,7 +347,7 @@ async def test_classify_sends_exact_responses_request_and_returns_usage() -> Non
     assert len(sdk.responses.calls) == 1
     call = sdk.responses.calls[0]
     assert call["model"] == "gpt-5.4-nano-2026-03-17"
-    assert call["reasoning"] == {"effort": "low"}
+    assert call["reasoning"] == {"effort": "medium"}
     assert call["max_output_tokens"] == 800
     assert call["store"] is False
     assert "tools" not in call
