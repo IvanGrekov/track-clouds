@@ -76,13 +76,14 @@ def _sanitize_ai_text(value: str | None, limit: int) -> str:
 def _render_ai_observation(observation: AIObservationReport) -> str:
     result = observation.result
     if result is not None:
-        lines = ["AI analysis:", f"Decision: {result.decision.value}"]
+        lines = ["AI analysis:"]
         if result.decision is AIDecision.ACCEPT:
             if result.location is not None:
                 lines.append(f"Location: {_sanitize_ai_text(result.location, 256)}")
             if result.event is not None:
                 lines.append(f"Event: {_sanitize_ai_text(result.event, 512)}")
         else:
+            lines.append(f"Decision: {result.decision.value}")
             if result.reason_code is not None:
                 lines.append(f"Reason code: {result.reason_code.value}")
             if result.reason is not None:

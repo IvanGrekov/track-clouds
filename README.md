@@ -290,9 +290,10 @@ Telegram retries повторюють вже сформований рядок �
 path setup failure нормалізується як fail-open `api_error`.
 
 Alert для AI-eligible keyword path після семантичного рішення містить блок `AI analysis:` із
-`Decision` і загальним `Delay` у секундах з трьома знаками після крапки, наприклад
-`Delay: 0.842 s`. Для `accept` додаються наявні `Location` та `Event`, а для `reject` —
-наявні `Reason code` та `Reason`.
+загальним `Delay` у секундах з трьома знаками після крапки, наприклад `Delay: 0.842 s`.
+Для доставленого `accept` додаються наявні `Location` та `Event`, а redundant `Decision` не
+показується. Для `reject`, який потрапляє лише в warning log, залишаються `Decision`, наявні
+`Reason code` та `Reason`.
 Усі auxiliary-поля optional і показуються лише за наявності. Model і token usage у Telegram
 не показуються, але залишаються доступними як безпечні runtime metadata для application
 logs. Технічний блок містить лише `Status` та однореченнєвий `Description`.
