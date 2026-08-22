@@ -655,7 +655,10 @@ async def test_failed_delivery_does_not_allow_duplicate_to_repeat_observation() 
 
 
 @pytest.mark.asyncio
-async def test_technical_observation_is_delivered_and_next_message_is_processed() -> None:
+@pytest.mark.parametrize("status", tuple(AIObservationTechnicalStatus))
+async def test_technical_observation_is_delivered_and_next_message_is_processed(
+    status: AIObservationTechnicalStatus,
+) -> None:
     discussion_id = -1001111111111
     client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])
     config = MonitorConfig(
@@ -666,7 +669,7 @@ async def test_technical_observation_is_delivered_and_next_message_is_processed(
     notifier = FakeNotifier()
     observer = FakeObserver(
         [
-            _failure_report(AIObservationTechnicalStatus.TIMEOUT),
+            _failure_report(status),
             _success_report(),
         ]
     )
@@ -679,7 +682,7 @@ async def test_technical_observation_is_delivered_and_next_message_is_processed(
 
     assert len(observer.calls) == 2
     assert len(notifier.sent) == 2
-    assert "Status: timeout" in notifier.sent[0]
+    assert f"Status: {status.value}" in notifier.sent[0]
     assert "Description:" in notifier.sent[0]
     assert "Decision:" not in notifier.sent[0]
     assert "Decision: accept" in notifier.sent[1]
@@ -722,7 +725,9 @@ async def test_raw_invalid_ai_output_is_logged_but_not_added_to_telegram(
 
 
 @pytest.mark.asyncio
-async def test_reject_and_accept_are_both_delivered() -> None:
+async def test_reject_is_warning_logged_and_only_accept_is_delivered(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     discussion_id = -1001111111111
     client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])
     config = MonitorConfig(
@@ -743,6 +748,7 @@ async def test_reject_and_accept_are_both_delivered() -> None:
     notifier = FakeNotifier()
     observer = FakeObserver([_semantic_report(reject), _semantic_report(accept)])
     monitor = TelegramMonitor(client, config, notifier, ai_observer=observer)
+    caplog.set_level(logging.WARNING, logger="telegram_monitor.service")
     await monitor.prepare()
 
     rejected_event = FakeEvent(discussion_id, 56, "k8s перше повідомлення")
@@ -753,12 +759,22 @@ async def test_reject_and_accept_are_both_delivered() -> None:
     await monitor._queue.join()
 
     assert len(observer.calls) == 2
-    assert len(notifier.sent) == 2
-    assert "Decision: reject" in notifier.sent[0]
-    assert "Reason code: only_opinion_or_emotion" in notifier.sent[0]
-    assert "перше повідомлення" in notifier.sent[0]
-    assert "Decision: accept" in notifier.sent[1]
-    assert "Стрийська" in notifier.sent[1]
+    assert len(notifier.sent) == 1
+    assert "Decision: accept" in notifier.sent[0]
+    assert "Стрийська" in notifier.sent[0]
+
+    reject_logs = [
+        record for record in caplog.records if record.msg.startswith("AI rejected notification")
+    ]
+    assert len(reject_logs) == 1
+    assert reject_logs[0].levelno == logging.WARNING
+    reject_log = reject_logs[0].getMessage()
+    assert "skipped Telegram delivery" in reject_log
+    assert "k8s перше повідомлення" in reject_log
+    assert "Source: Discussion" in reject_log
+    assert "Decision: reject" in reject_log
+    assert "Reason code: only_opinion_or_emotion" in reject_log
+    assert "Немає корисного фактичного повідомлення про маршрут." in reject_log
     await monitor.close()
 
 

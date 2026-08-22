@@ -56,6 +56,7 @@ flowchart LR
     WORKER["Notification worker"]
     AI["Binary AI observation<br/>ACCEPT / REJECT"]
     ALERT["Render alert"]
+    WARN["Railway warning log"]
     SAVED["Saved Messages"]
     BOT["TelegramBotNotifier"]
     API["Telegram Bot API"]
@@ -70,7 +71,8 @@ flowchart LR
     QUEUE --> WORKER
     WORKER -->|"notify_all / skip_ai / AI disabled"| ALERT
     WORKER -->|"eligible keyword path + AI enabled"| AI
-    AI -->|"ACCEPT / REJECT"| ALERT
+    AI -->|"ACCEPT"| ALERT
+    AI -->|"REJECT"| WARN
     AI -->|"technical failure: fail-open"| ALERT
     ALERT -->|"saved_messages mode"| SAVED
     ALERT -->|"bot mode"| BOT
@@ -119,9 +121,9 @@ flowchart LR
    - bot mode викликає `getMe`, перевіряє відсутність webhook і запускає `getUpdates` polling.
 10. Запускається notification worker і обробляється bounded startup buffer.
 11. Worker для keyword-matched queue job із `skip_ai = false` виконує один logical AI
-    observation. `accept` і `reject` формують та доставляють по одному alert із
-    decision-specific полями, а технічний failure пропускає повідомлення далі за fail-open
-    правилом. `notify_all` або `skip_ai = true` job не викликає observer і переходить
+    observation. `accept` формує та доставляє alert, `reject` формує alert лише для
+    санітизованого `WARNING`-логу, а технічний failure пропускає повідомлення далі за
+    fail-open правилом. `notify_all` або `skip_ai = true` job не викликає observer і переходить
     безпосередньо до звичайного formatter/delivery path.
 12. Основна coroutine чекає відключення Telethon до сигналу або фатальної помилки bot polling.
 
@@ -156,8 +158,8 @@ Conditional semantics не перетворюються на локальну cr
 - для звичайного keyword path модель перевіряє лише наявність явного reject-критерію з
   private policy. Якщо такого критерію немає, рішення за замовчуванням — `accept`;
 - неповна, неоднозначна або історична, але потенційно корисна інформація приймається;
-- `accept` і `reject` передаються formatter-у та продовжують Telegram delivery; цей
-  observation mode дає змогу оцінити якість класифікації на реальному потоці.
+- `accept` продовжує Telegram delivery; `reject` передається formatter-у лише для повного
+  warning log і не викликає notifier.
 
 `parse_ai_observation_response()` виконує локальну перевірку навіть після strict Structured
 Output: JSON decode, JSON object та обов'язкове бінарне `decision`. Некоректний JSON,
@@ -284,7 +286,8 @@ CLI serializer пропускає auxiliary keys із відсутніми зн�
     AI-eligible keyword path один background worker починає спільний deadline до 30 секунд
     і передає залишок budget ізольованому OpenAI client-у.
 15. `accept` і `reject` AI-eligible keyword path передаються `render_notification()`, який
-    створює один plain-text alert до Telegram limit 4096 символів. Блок `AI analysis:`
+    створює один plain-text alert до Telegram limit 4096 символів. `accept` іде notifier-у,
+    а `reject` — лише в санітизований `WARNING` log. Блок `AI analysis:`
     містить `Decision`, `Delay` у секундах і наявні поля відповідного рішення:
     `Location`/`Event` для `accept` або `Reason code`/`Reason` для `reject`.
 16. Technical status також передається formatter-у за fail-open правилом; його блок містить
@@ -473,6 +476,7 @@ Bot alert delivered to N/N subscriber(s)
 Bot alert delivery incomplete (status=partial|failed, delivered=N, failed=N, ...)
 AI observation completed (decision=accept, ...)
 AI observation completed (decision=reject, reason_code=..., ...)
+AI rejected notification; skipped Telegram delivery (message=chat/message, alert=...)
 AI observation failed (status=..., model=..., message=chat/message, elapsed_seconds=..., ...)
 AI observation failed (status=invalid_response, ..., ai_response=...)
 ```
@@ -486,10 +490,11 @@ Retryable Bot API delivery errors записуються як `WARNING` з `chat
 записуються як `ERROR`; лог також попереджає, що durable retry не запланований. Alert text,
 Bot API request payload та token у ці delivery-логи не додаються.
 
-AI logs не містять message text, location, event, reason, refusal, exception, prompt або
-API key. Семантичний log завжди містить `decision`; reject-only `reason_code` додається,
-коли він наявний. Після `accept` і `reject` notifier викликається однаково, тому за успішної
-відправки далі з'являється звичайний delivery log.
+AI observation metadata logs не містять message text, location, event, reason, refusal,
+exception, prompt або API key. Окремий `WARNING` для `reject` навмисно містить санітизований
+сформований alert, щоб відхилене повідомлення було повністю видиме у Railway. Семантичний
+metadata log завжди містить `decision`; reject-only `reason_code` додається,
+коли він наявний. Notifier викликається після `accept`, але не після `reject`.
 Для `invalid_response` error log містить однорядковий, обмежений за довжиною
 `ai_response`, щоб зберегти невалідний model output для діагностики. Неочікувана
 observer-помилка також спочатку нормалізується до `api_error`, а вже потім записується без
@@ -551,7 +556,8 @@ Telethon events, dialogs і client lifecycle перевіряються fake-о�
   delivery retries;
 - повний AI bypass для `notify_all` і `skip_ai = true` зі звичайним formatter/delivery path;
 - незмінна positive/negative keyword-фільтрація для `skip_ai`;
-- delivery після `accept`, `reject` або technical failure і decision-specific AI-поля alert;
+- delivery після `accept` або technical failure, warning-only path після `reject` і
+  decision-specific AI-поля alert;
 - AI formatter labels, conditional fields, technical descriptions та Telegram limit 4096;
 - fail-open observer setup і коректне закриття lifecycle resources;
 - відсутність live API probe під час створення client-а;
@@ -580,8 +586,8 @@ ruff format --check .
 - Message edits не обробляються.
 - Albums можуть створювати кілька alerts.
 - Keyword matching визначає кандидатів для черги; ввімкнений AI observation класифікує
-  keyword path із `skip_ai = false`, але в поточному observation mode і `accept`, і `reject`
-  доставляються для аналізу, тоді як technical statuses залишаються fail-open. `notify_all`
+  keyword path із `skip_ai = false`: `accept` доставляється, `reject` записується як
+  `WARNING`, а technical statuses залишаються fail-open. `notify_all`
   і `skip_ai = true` повністю обходять AI й використовують звичайний delivery path; лише
   `notify_all` скасовує positive keyword requirement.
 - Один послідовний worker зберігає порядок, але довгий AI timeout затримує наступні jobs;

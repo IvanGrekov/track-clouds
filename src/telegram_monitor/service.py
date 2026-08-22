@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from telethon import events, utils
 
-from .ai_models import AIObservationTechnicalStatus
+from .ai_models import AIDecision, AIObservationTechnicalStatus
 from .ai_observer import AIObservationReport, AIObserver
 from .deduplication import MessageKey, RecentMessageCache
 from .formatting import render_notification
@@ -23,6 +23,7 @@ from .registry import SourceRegistry
 LOGGER = logging.getLogger(__name__)
 _SHUTDOWN_DELIVERY_GRACE_SECONDS = 5.0
 _AI_RESPONSE_LOG_MAX_CHARS = 16_000
+_REJECTED_NOTIFICATION_LOG_MAX_CHARS = 4_096
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,6 +282,21 @@ class TelegramMonitor:
                 # Telegram transport retries must never cause another AI request.
                 self._deduplicator.commit(key)
                 alert_prepared = True
+                if (
+                    ai_observation is not None
+                    and ai_observation.result is not None
+                    and ai_observation.result.decision is AIDecision.REJECT
+                ):
+                    LOGGER.warning(
+                        "AI rejected notification; skipped Telegram delivery "
+                        "(message=%s/%s, alert=%s)",
+                        *key,
+                        _safe_log_text(
+                            notification,
+                            max_chars=_REJECTED_NOTIFICATION_LOG_MAX_CHARS,
+                        ),
+                    )
+                    continue
                 await self._deliver_with_retries(key, notification)
             except asyncio.CancelledError:
                 if not alert_prepared:
