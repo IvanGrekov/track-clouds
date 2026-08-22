@@ -287,9 +287,10 @@ CLI serializer пропускає auxiliary keys із відсутніми зн�
     і передає залишок budget ізольованому OpenAI client-у.
 15. `accept` і `reject` AI-eligible keyword path передаються `render_notification()`, який
     створює один plain-text alert до Telegram limit 4096 символів. `accept` іде notifier-у,
-    а `reject` — лише в санітизований `WARNING` log. Блок `AI analysis:`
-    містить `Decision`, `Delay` у секундах і наявні поля відповідного рішення:
-    `Location`/`Event` для `accept` або `Reason code`/`Reason` для `reject`.
+    а `reject` — лише в санітизований `WARNING` log. Блок `AI analysis:` містить `Delay`
+    у секундах і наявні поля відповідного рішення: `Location`/`Event` для `accept` або
+    `Reason code`/`Reason` для `reject`. Доставлений `accept` не містить redundant
+    `Decision`; у warning log для `reject` це поле залишається.
 16. Technical status також передається formatter-у за fail-open правилом; його блок містить
     лише `Status` і `Description`, а вихідне повідомлення все одно доставляється.
 17. Dedup key commit-иться до Telegram transport retries. Усі retries і bot subscribers

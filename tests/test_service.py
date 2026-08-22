@@ -504,7 +504,7 @@ async def test_observes_once_and_reuses_rendered_alert_for_delivery_retry() -> N
     assert len(notifier.sent) == 1
     assert "AI analysis:" in notifier.sent[0]
     assert "Source: Discussion\nTime:" in notifier.sent[0]
-    assert "Decision: accept" in notifier.sent[0]
+    assert "Decision:" not in notifier.sent[0]
     assert "Model:" not in notifier.sent[0]
     assert "Policy:" not in notifier.sent[0]
     assert "Tokens:" not in notifier.sent[0]
@@ -585,7 +585,7 @@ async def test_mixed_sources_observe_only_non_notify_all_messages() -> None:
     assert [call[0].message_id for call in observer.calls] == [67]
     assert len(notifier.sent) == 2
     assert "AI analysis:" not in notifier.sent[0]
-    assert "Decision: accept" in notifier.sent[1]
+    assert "Decision:" not in notifier.sent[1]
     await monitor.close()
 
 
@@ -685,7 +685,7 @@ async def test_technical_observation_is_delivered_and_next_message_is_processed(
     assert f"Status: {status.value}" in notifier.sent[0]
     assert "Description:" in notifier.sent[0]
     assert "Decision:" not in notifier.sent[0]
-    assert "Decision: accept" in notifier.sent[1]
+    assert "Decision:" not in notifier.sent[1]
     await monitor.close()
 
 
@@ -760,7 +760,7 @@ async def test_reject_is_warning_logged_and_only_accept_is_delivered(
 
     assert len(observer.calls) == 2
     assert len(notifier.sent) == 1
-    assert "Decision: accept" in notifier.sent[0]
+    assert "Decision:" not in notifier.sent[0]
     assert "Стрийська" in notifier.sent[0]
 
     reject_logs = [

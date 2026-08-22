@@ -121,7 +121,7 @@ def test_renders_successful_ai_observation_without_experiment_metadata() -> None
     )
 
     assert "\n\nAI analysis:\n" in rendered
-    assert "Decision: accept" in rendered
+    assert "Decision:" not in rendered
     assert "Location: Городоцька, біля цирку" in rendered
     assert "Event: перекрита права смуга" in rendered
     assert "Reason code:" not in rendered
@@ -242,6 +242,7 @@ def test_ai_notification_preserves_ai_block_and_link_within_telegram_limit() -> 
     )
 
     assert len(rendered) <= TELEGRAM_MESSAGE_LIMIT
-    assert "\n\nAI analysis:\nDecision: accept" in rendered
+    assert "\n\nAI analysis:\nLocation:" in rendered
+    assert "Decision:" not in rendered
     assert "Delay: 0.842 s" in rendered
     assert rendered.endswith("Open: https://t.me/cloud_chat/42")
