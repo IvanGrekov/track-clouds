@@ -459,7 +459,10 @@ private policy або Telegram text; HTTPX також не повинен лог
 
 ## Логи
 
-Події пишуться стандартним модулем `logging` у stdout/stderr:
+Події пишуться стандартним модулем `logging`: `DEBUG`/`INFO` — plain text у stdout,
+`WARNING` — однорядковий JSON із `level = warn` у stdout, а `ERROR`/`CRITICAL` — у stderr.
+Завдяки structured warning Railway не підміняє його severity на `error`. `ai-check` зберігає
+всі diagnostics у stderr, оскільки stdout цієї one-shot команди містить лише result JSON.
 
 На logger `telethon.client.updates` встановлено точковий filter для `INFO`-повідомлень
 `Got difference for channel <id> updates` та `Got difference for account updates`. Інші

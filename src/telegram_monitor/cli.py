@@ -36,6 +36,7 @@ from .openai_client import (
 )
 
 LOGGER = logging.getLogger(__name__)
+_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 
 class _SuppressDifferenceLogs(logging.Filter):
@@ -60,8 +61,29 @@ class _BelowWarningFilter(logging.Filter):
         return record.levelno < logging.WARNING
 
 
+class _ExactWarningFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno == logging.WARNING
+
+
+class _RailwayWarningFormatter(logging.Formatter):
+    """Emit the structured warning shape Railway recognizes on stdout."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return json.dumps(
+            {
+                "level": "warn",
+                "message": super().format(record),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+
 _DIFFERENCE_LOG_FILTER = _SuppressDifferenceLogs()
 _BELOW_WARNING_FILTER = _BelowWarningFilter()
+_EXACT_WARNING_FILTER = _ExactWarningFilter()
+_RAILWAY_WARNING_FORMATTER = _RailwayWarningFormatter(_LOG_FORMAT)
 
 _AI_TECHNICAL_EXIT_CODE = 3
 
@@ -147,11 +169,15 @@ def _configure_logging(*, stdout_is_data: bool = False) -> None:
     else:
         stdout_handler = logging.StreamHandler(sys.stdout)
         stdout_handler.addFilter(_BELOW_WARNING_FILTER)
-        stderr_handler.setLevel(logging.WARNING)
-        handlers = (stdout_handler, stderr_handler)
+        warning_handler = logging.StreamHandler(sys.stdout)
+        warning_handler.setLevel(logging.WARNING)
+        warning_handler.addFilter(_EXACT_WARNING_FILTER)
+        warning_handler.setFormatter(_RAILWAY_WARNING_FORMATTER)
+        stderr_handler.setLevel(logging.ERROR)
+        handlers = (stdout_handler, warning_handler, stderr_handler)
     logging.basicConfig(
         level=level,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        format=_LOG_FORMAT,
         handlers=handlers,
         force=True,
     )
