@@ -6,12 +6,13 @@ import os
 import unicodedata
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
+from datetime import UTC, datetime
 from typing import ParamSpec, Protocol, TypeVar
 
 import httpx
 from dotenv import load_dotenv
 
-from .models import ChatRef, ConfigurationError
+from .models import ChatRef, ConfigurationError, QuietHoursConfig
 from .subscriber_store import Subscriber, SubscriberStore, SubscriptionResult
 
 LOGGER = logging.getLogger(__name__)
@@ -185,6 +186,7 @@ class TelegramBotNotifier:
         transport: httpx.AsyncBaseTransport | None = None,
         store: SubscriberStore | None = None,
         on_polling_fatal: Callable[[], Awaitable[object]] | None = None,
+        quiet_hours: QuietHoursConfig | None = None,
     ) -> None:
         self._api = TelegramBotApi(token, transport=transport)
         self._store = store or SubscriberStore(database_path, subscriber_limit)
@@ -194,6 +196,7 @@ class TelegramBotNotifier:
         self._delivery_retry_max_seconds = delivery_retry_max_seconds
         self._poll_timeout_seconds = poll_timeout_seconds
         self._on_polling_fatal = on_polling_fatal
+        self._quiet_hours = quiet_hours or QuietHoursConfig()
         self._poll_task: asyncio.Task[None] | None = None
         self._poll_ready = asyncio.Event()
         self._closed = False
@@ -208,6 +211,7 @@ class TelegramBotNotifier:
         delivery_retry_base_seconds: float = 1.0,
         delivery_retry_max_seconds: float = 30.0,
         on_polling_fatal: Callable[[], Awaitable[object]] | None = None,
+        quiet_hours: QuietHoursConfig | None = None,
     ) -> TelegramBotNotifier:
         load_dotenv()
         token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -221,6 +225,7 @@ class TelegramBotNotifier:
             delivery_retry_base_seconds=delivery_retry_base_seconds,
             delivery_retry_max_seconds=delivery_retry_max_seconds,
             on_polling_fatal=on_polling_fatal,
+            quiet_hours=quiet_hours,
         )
 
     async def start(self) -> None:
@@ -351,6 +356,20 @@ class TelegramBotNotifier:
         command = command_token.split("@", maxsplit=1)[0]
         if command not in ("/start", "/stop"):
             return
+
+        if self._quiet_hours.enabled:
+            raw_message_date = message.get("date")
+            if isinstance(raw_message_date, bool) or not isinstance(raw_message_date, int):
+                LOGGER.warning("Ignoring Bot API command without a valid quiet-hours timestamp")
+                return
+            try:
+                message_date = datetime.fromtimestamp(raw_message_date, UTC)
+            except (OverflowError, OSError, ValueError):
+                LOGGER.warning("Ignoring Bot API command without a valid quiet-hours timestamp")
+                return
+            if self._quiet_hours.contains(message_date):
+                LOGGER.info("Ignoring Bot API %s command received during quiet hours", command)
+                return
 
         await _run_blocking(self._store.open)
         sender = message.get("from")

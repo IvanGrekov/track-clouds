@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +12,7 @@ from telegram_monitor.models import (
     AIObservationConfig,
     ConfigurationError,
     MonitorConfig,
+    QuietHoursConfig,
     SourceRule,
 )
 
@@ -75,6 +78,7 @@ class FakeMonitor:
         config: MonitorConfig,
         notifier: FakeNotifier,
         ai_observer: FakeObserver | None,
+        accept_events_since: datetime | None,
         events: list[str],
         fail_prepare: bool = False,
     ) -> None:
@@ -82,6 +86,7 @@ class FakeMonitor:
         self.config = config
         self.notifier = notifier
         self.ai_observer = ai_observer
+        self.accept_events_since = accept_events_since
         self._events = events
         self._fail_prepare = fail_prepare
 
@@ -94,8 +99,8 @@ class FakeMonitor:
             raise RuntimeError("prepare failed")
         return ()
 
-    async def close(self) -> None:
-        self._events.append("monitor.close")
+    async def close(self, *, discard_pending: bool = False) -> None:
+        self._events.append("monitor.close.discard" if discard_pending else "monitor.close")
         try:
             await self.notifier.close()
         finally:
@@ -299,6 +304,112 @@ async def test_run_monitor_closes_owned_resources_after_prepare_failure(
     assert observer.close_calls == 1
     assert events[-4:] == [
         "monitor.close",
+        "notifier.close",
+        "observer.close",
+        "client.disconnect",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_monitor_stays_offline_when_started_during_quiet_hours(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class StopTest(RuntimeError):
+        pass
+
+    def fail_client_creation(credentials: object) -> None:
+        del credentials
+        raise AssertionError("Telegram client must not be created during quiet hours")
+
+    async def stop_sleep(seconds: float) -> None:
+        assert seconds == 5 * 60 * 60
+        raise StopTest
+
+    monkeypatch.setattr(app, "create_client", fail_client_creation)
+    config = MonitorConfig(
+        sources=(SourceRule(peer="@source", keywords=("road",)),),
+        quiet_hours=QuietHoursConfig(enabled=True),
+    )
+
+    with pytest.raises(StopTest):
+        await app.run_monitor(
+            config,
+            now=lambda: datetime(2026, 8, 22, 23, 0, tzinfo=UTC),
+            sleep=stop_sleep,
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_monitor_cancels_active_session_at_quiet_hours_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class StopTest(RuntimeError):
+        pass
+
+    events: list[str] = []
+
+    class BlockingClient(FakeClient):
+        def __init__(self, recorded_events: list[str]) -> None:
+            super().__init__(recorded_events)
+            self._disconnected = asyncio.Event()
+
+        async def run_until_disconnected(self) -> None:
+            self._events.append("client.run")
+            await self._disconnected.wait()
+
+        async def disconnect(self) -> None:
+            self._events.append("client.disconnect")
+            self._disconnected.set()
+
+    class AdvancingClock:
+        def __init__(self) -> None:
+            self.current = datetime(2026, 8, 22, 4, 0, tzinfo=UTC)
+            self.sleeps: list[float] = []
+
+        def now(self) -> datetime:
+            return self.current
+
+        async def sleep(self, seconds: float) -> None:
+            self.sleeps.append(seconds)
+            if len(self.sleeps) == 1:
+                self.current += timedelta(seconds=seconds)
+                return
+            raise StopTest
+
+    clock = AdvancingClock()
+    client = BlockingClient(events)
+    notifier = FakeNotifier(events)
+    observer = FakeObserver(events)
+    monitors: list[FakeMonitor] = []
+    monkeypatch.setattr(
+        app,
+        "TelegramCredentials",
+        SimpleNamespace(from_environment=lambda: object()),
+    )
+    monkeypatch.setattr(app, "create_client", lambda credentials: client)
+    monkeypatch.setattr(app, "build_notifier", lambda built_client, config: notifier)
+    monkeypatch.setattr(app, "build_ai_observer", lambda config: observer)
+
+    def build_monitor(**kwargs: object) -> FakeMonitor:
+        monitor = FakeMonitor(events=events, **kwargs)  # type: ignore[arg-type]
+        monitors.append(monitor)
+        return monitor
+
+    monkeypatch.setattr(app, "TelegramMonitor", build_monitor)
+    config = MonitorConfig(
+        sources=(SourceRule(peer="@source", keywords=("road",)),),
+        quiet_hours=QuietHoursConfig(enabled=True),
+        ai_observation=AIObservationConfig(enabled=True),
+    )
+
+    with pytest.raises(StopTest):
+        await app.run_monitor(config, now=clock.now, sleep=clock.sleep)
+
+    assert len(monitors) == 1
+    assert clock.sleeps == [18.5 * 60 * 60, 5.5 * 60 * 60]
+    assert "monitor.close.discard" in events
+    assert events[-4:] == [
+        "monitor.close.discard",
         "notifier.close",
         "observer.close",
         "client.disconnect",

@@ -43,11 +43,15 @@ class TelegramMonitor:
         config: MonitorConfig,
         notifier: Notifier,
         ai_observer: AIObserver | None = None,
+        accept_events_since: datetime | None = None,
     ) -> None:
         self._client = client
         self._config = config
         self._notifier = notifier
         self._ai_observer = ai_observer
+        if accept_events_since is not None and accept_events_since.tzinfo is None:
+            raise ValueError("accept_events_since must be timezone-aware")
+        self._accept_events_since = accept_events_since
         self._registry: SourceRegistry | None = None
         self._deduplicator = RecentMessageCache(config.deduplication_window)
         self._message_log_deduplicator = RecentMessageCache(config.deduplication_window)
@@ -109,7 +113,7 @@ class TelegramMonitor:
         )
         return descriptions
 
-    async def close(self) -> None:
+    async def close(self, *, discard_pending: bool = False) -> None:
         if self._closed:
             return
         self._closed = True
@@ -120,20 +124,35 @@ class TelegramMonitor:
         self._startup_buffer.clear()
 
         if self._worker is not None:
-            flush_timeout = (
-                self._config.ai_observation.operation_timeout_seconds
-                + _SHUTDOWN_DELIVERY_GRACE_SECONDS
-                if self._ai_observer is not None
-                else _SHUTDOWN_DELIVERY_GRACE_SECONDS
-            )
-            try:
-                await asyncio.wait_for(self._queue.join(), timeout=flush_timeout)
-            except TimeoutError:
-                LOGGER.warning("Timed out while flushing pending notifications")
+            if not discard_pending:
+                flush_timeout = (
+                    self._config.ai_observation.operation_timeout_seconds
+                    + _SHUTDOWN_DELIVERY_GRACE_SECONDS
+                    if self._ai_observer is not None
+                    else _SHUTDOWN_DELIVERY_GRACE_SECONDS
+                )
+                try:
+                    await asyncio.wait_for(self._queue.join(), timeout=flush_timeout)
+                except TimeoutError:
+                    LOGGER.warning("Timed out while flushing pending notifications")
             self._worker.cancel()
             with suppress(asyncio.CancelledError):
                 await self._worker
             self._worker = None
+            if discard_pending:
+                discarded = 0
+                while True:
+                    try:
+                        pending = self._queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    self._deduplicator.release(pending.key)
+                    self._queue.task_done()
+                    discarded += 1
+                LOGGER.info(
+                    "Cancelled unfinished alert processing for quiet hours (discarded_queued=%d)",
+                    discarded,
+                )
         try:
             await self._notifier.close()
         finally:
@@ -163,6 +182,8 @@ class TelegramMonitor:
         text = raw_text if isinstance(raw_text, str) else ""
         source = registry.get(chat_id)
         if source is None:
+            return
+        if self._event_is_outside_active_window(event):
             return
         message_id = getattr(event, "id", None)
         if not isinstance(chat_id, int) or not isinstance(message_id, int):
@@ -226,6 +247,20 @@ class TelegramMonitor:
         except Exception:
             self._deduplicator.release(key)
             LOGGER.exception("Could not process Telegram message %s/%s", chat_id, message_id)
+
+    def _event_is_outside_active_window(self, event: object) -> bool:
+        quiet_hours = self._config.quiet_hours
+        if not quiet_hours.enabled and self._accept_events_since is None:
+            return False
+        message_date = getattr(event, "date", None)
+        if not isinstance(message_date, datetime):
+            LOGGER.warning("Ignoring Telegram event without a valid quiet-hours timestamp")
+            return True
+        if message_date.tzinfo is None:
+            message_date = message_date.replace(tzinfo=UTC)
+        if quiet_hours.contains(message_date):
+            return True
+        return self._accept_events_since is not None and message_date < self._accept_events_since
 
     def _log_message(
         self,

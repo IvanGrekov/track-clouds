@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Literal, TypeAlias
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -16,6 +16,116 @@ _AI_REASONING_EFFORTS = frozenset({"none", "low", "medium", "high", "xhigh"})
 
 class ConfigurationError(ValueError):
     """Raised when local or environment configuration is invalid."""
+
+
+def _parse_quiet_hours_clock(value: object, field_name: str) -> tuple[str, int]:
+    if not isinstance(value, str):
+        raise ConfigurationError(f"quiet_hours.{field_name} must use HH:MM format")
+    cleaned = value.strip()
+    parts = cleaned.split(":")
+    if (
+        len(parts) != 2
+        or len(parts[0]) != 2
+        or len(parts[1]) != 2
+        or not all(part.isascii() and part.isdigit() for part in parts)
+    ):
+        raise ConfigurationError(f"quiet_hours.{field_name} must use HH:MM format")
+    hour, minute = (int(part) for part in parts)
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        raise ConfigurationError(f"quiet_hours.{field_name} must be a valid UTC time")
+    return f"{hour:02d}:{minute:02d}", hour * 60 + minute
+
+
+@dataclass(frozen=True, slots=True)
+class QuietHoursConfig:
+    """Daily interval during which all external monitor activity is suspended."""
+
+    enabled: bool = False
+    start: str = "22:30"
+    end: str = "04:00"
+    timezone: str = "UTC"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise ConfigurationError("quiet_hours.enabled must be boolean")
+
+        start, start_minutes = _parse_quiet_hours_clock(self.start, "start")
+        end, end_minutes = _parse_quiet_hours_clock(self.end, "end")
+        if start_minutes == end_minutes:
+            raise ConfigurationError("quiet_hours.start and quiet_hours.end must be different")
+        object.__setattr__(self, "start", start)
+        object.__setattr__(self, "end", end)
+
+        if not isinstance(self.timezone, str) or not self.timezone.strip():
+            raise ConfigurationError("quiet_hours.timezone must be a non-empty timezone name")
+        timezone_name = self.timezone.strip()
+        try:
+            ZoneInfo(timezone_name)
+        except ZoneInfoNotFoundError as error:
+            raise ConfigurationError(f"Unknown quiet_hours.timezone: {timezone_name}") from error
+        object.__setattr__(self, "timezone", timezone_name)
+
+    @property
+    def _start_minutes(self) -> int:
+        hour, minute = (int(part) for part in self.start.split(":"))
+        return hour * 60 + minute
+
+    @property
+    def _end_minutes(self) -> int:
+        hour, minute = (int(part) for part in self.end.split(":"))
+        return hour * 60 + minute
+
+    def contains(self, value: datetime) -> bool:
+        if not self.enabled:
+            return False
+        if value.tzinfo is None:
+            raise ValueError("Quiet-hours timestamps must be timezone-aware")
+        local = value.astimezone(ZoneInfo(self.timezone))
+        current_minutes = local.hour * 60 + local.minute
+        start = self._start_minutes
+        end = self._end_minutes
+        if start < end:
+            return start <= current_minutes < end
+        return current_minutes >= start or current_minutes < end
+
+    def next_transition(self, value: datetime) -> datetime:
+        """Return the next quiet-hours boundary as an aware UTC datetime."""
+
+        if not self.enabled:
+            raise ValueError("Quiet hours are disabled")
+        if value.tzinfo is None:
+            raise ValueError("Quiet-hours timestamps must be timezone-aware")
+        zone = ZoneInfo(self.timezone)
+        local = value.astimezone(zone)
+        target = self.end if self.contains(value) else self.start
+        target_hour, target_minute = (int(part) for part in target.split(":"))
+
+        def boundary_for(day: date) -> datetime:
+            return datetime.combine(day, time(target_hour, target_minute), tzinfo=zone)
+
+        boundary = boundary_for(local.date())
+        if boundary <= local:
+            boundary = boundary_for(local.date() + timedelta(days=1))
+        return boundary.astimezone(UTC)
+
+    def most_recent_end(self, value: datetime) -> datetime:
+        """Return the latest end boundary, used as the active-window replay cutoff."""
+
+        if not self.enabled:
+            raise ValueError("Quiet hours are disabled")
+        if value.tzinfo is None:
+            raise ValueError("Quiet-hours timestamps must be timezone-aware")
+        zone = ZoneInfo(self.timezone)
+        local = value.astimezone(zone)
+        end_hour, end_minute = (int(part) for part in self.end.split(":"))
+
+        def boundary_for(day: date) -> datetime:
+            return datetime.combine(day, time(end_hour, end_minute), tzinfo=zone)
+
+        boundary = boundary_for(local.date())
+        if boundary > local:
+            boundary = boundary_for(local.date() - timedelta(days=1))
+        return boundary.astimezone(UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +324,7 @@ class MonitorConfig:
     delivery_retry_max_seconds: float = 30.0
     skip_forwards_from_watched_sources: bool = True
     ai_observation: AIObservationConfig = field(default_factory=AIObservationConfig)
+    quiet_hours: QuietHoursConfig = field(default_factory=QuietHoursConfig)
 
     def trusted_area_context_for(self, source: SourceRule) -> str | None:
         """Return the source-specific context, falling back to the AI default."""
@@ -231,6 +342,8 @@ class MonitorConfig:
             )
         if not isinstance(self.ai_observation, AIObservationConfig):
             raise ConfigurationError("ai_observation must be an AIObservationConfig")
+        if not isinstance(self.quiet_hours, QuietHoursConfig):
+            raise ConfigurationError("quiet_hours must be a QuietHoursConfig")
         if isinstance(self.notify_to, bool) or not isinstance(self.notify_to, (int, str)):
             raise ConfigurationError("notify_to must be a Telegram username or numeric dialog ID")
         if isinstance(self.notify_to, str) and not self.notify_to.strip():

@@ -134,6 +134,40 @@ skip_ai = true
 За замовчуванням файл читається з поточної директорії. Інший шлях можна задати у `.env`,
 наприклад `MONITOR_CONFIG_FILE=~/.config/telegram-monitor/config.toml`.
 
+### Quiet hours
+
+Щоб щодня повністю зупиняти зовнішню активність monitor-а, додайте:
+
+```toml
+[quiet_hours]
+enabled = true
+start = "22:30"
+end = "04:00"
+timezone = "UTC"
+```
+
+Інтервал включає `22:30` і не включає `04:00`. На початку quiet hours monitor негайно
+скасовує незавершені AI та delivery operations, відкидає queued alerts, закриває Telethon і
+Telegram Bot API clients. О `04:00` він створює нові clients і підключається знову. Завдяки
+timestamp cutoff нічні повідомлення, нічні `/start` і `/stop`, а також alert, скасований перед
+паузою, після reconnect не відтворюються. Subscriber database та Bot API offset залишаються
+на persistent storage.
+
+У Railway ці значення можна задати без зміни private `config.toml`; environment overrides мають
+пріоритет над `[quiet_hours]`:
+
+```text
+MONITOR_QUIET_HOURS_ENABLED=true
+MONITOR_QUIET_HOURS_START=22:30
+MONITOR_QUIET_HOURS_END=04:00
+MONITOR_QUIET_HOURS_TIMEZONE=UTC
+MONITOR_QUIET_HOURS_BACKLOG=discard
+```
+
+`MONITOR_QUIET_HOURS_BACKLOG` навмисно підтримує лише `discard`. Не вмикайте Railway
+Serverless для цього timer-based режиму: sleeping deployment прокидається від inbound traffic,
+а не від внутрішнього таймера process-а.
+
 Discussion, прикріплена до каналу, є окремою supergroup. Додайте її як окреме джерело —
 username або `-100…` ID самої discussion-групи, а не каналу.
 

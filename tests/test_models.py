@@ -1,4 +1,5 @@
 import math
+from datetime import UTC, datetime
 
 import pytest
 
@@ -6,6 +7,7 @@ from telegram_monitor.models import (
     AIObservationConfig,
     ConfigurationError,
     MonitorConfig,
+    QuietHoursConfig,
     SourceRule,
 )
 
@@ -230,6 +232,42 @@ def test_source_rejects_non_string_keywords(keyword: object) -> None:
 def test_run_config_requires_sources() -> None:
     with pytest.raises(ConfigurationError, match="No Telegram sources"):
         MonitorConfig(sources=()).validate_for_run()
+
+
+def test_quiet_hours_cross_midnight_and_return_utc_transitions() -> None:
+    quiet_hours = QuietHoursConfig(enabled=True, start="22:30", end="04:00", timezone="UTC")
+
+    assert quiet_hours.contains(datetime(2026, 8, 22, 22, 29, tzinfo=UTC)) is False
+    assert quiet_hours.contains(datetime(2026, 8, 22, 22, 30, tzinfo=UTC)) is True
+    assert quiet_hours.contains(datetime(2026, 8, 23, 3, 59, tzinfo=UTC)) is True
+    assert quiet_hours.contains(datetime(2026, 8, 23, 4, 0, tzinfo=UTC)) is False
+    assert quiet_hours.next_transition(datetime(2026, 8, 22, 12, 0, tzinfo=UTC)) == datetime(
+        2026, 8, 22, 22, 30, tzinfo=UTC
+    )
+    assert quiet_hours.next_transition(datetime(2026, 8, 22, 23, 0, tzinfo=UTC)) == datetime(
+        2026, 8, 23, 4, 0, tzinfo=UTC
+    )
+    assert quiet_hours.most_recent_end(datetime(2026, 8, 23, 12, 0, tzinfo=UTC)) == datetime(
+        2026, 8, 23, 4, 0, tzinfo=UTC
+    )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"enabled": 1}, "enabled"),
+        ({"start": "22:3"}, "start"),
+        ({"end": "24:00"}, "end"),
+        ({"start": "04:00", "end": "04:00"}, "different"),
+        ({"timezone": "Mars/Olympus_Mons"}, "timezone"),
+    ],
+)
+def test_quiet_hours_reject_invalid_configuration(
+    kwargs: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ConfigurationError, match=message):
+        QuietHoursConfig(**kwargs)  # type: ignore[arg-type]
 
 
 def test_bot_subscriber_limit_cannot_exceed_ten() -> None:

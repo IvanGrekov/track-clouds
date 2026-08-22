@@ -4,11 +4,12 @@ import asyncio
 import json
 import logging
 from collections.abc import Mapping
+from datetime import UTC, datetime
 
 import httpx
 import pytest
 
-from telegram_monitor.models import ConfigurationError
+from telegram_monitor.models import ConfigurationError, QuietHoursConfig
 from telegram_monitor.notifier import TelegramBotNotifier
 from telegram_monitor.subscriber_store import SubscriberStore
 
@@ -19,19 +20,23 @@ def _update(
     text: str,
     *,
     chat_type: str = "private",
+    sent_at: datetime | None = None,
 ) -> dict[str, object]:
+    message: dict[str, object] = {
+        "message_id": update_id,
+        "from": {
+            "id": chat_id,
+            "username": f"user{chat_id}",
+            "first_name": f"User {chat_id}",
+        },
+        "chat": {"id": chat_id, "type": chat_type},
+        "text": text,
+    }
+    if sent_at is not None:
+        message["date"] = int(sent_at.timestamp())
     return {
         "update_id": update_id,
-        "message": {
-            "message_id": update_id,
-            "from": {
-                "id": chat_id,
-                "username": f"user{chat_id}",
-                "first_name": f"User {chat_id}",
-            },
-            "chat": {"id": chat_id, "type": chat_type},
-            "text": text,
-        },
+        "message": message,
     }
 
 
@@ -114,6 +119,38 @@ async def test_non_commands_and_group_commands_are_ignored() -> None:
 
     assert calls == 0
     assert store.list_chat_ids() == ()
+    await notifier.close()
+
+
+@pytest.mark.asyncio
+async def test_commands_received_during_quiet_hours_are_discarded() -> None:
+    replies: list[int] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        replies.append(payload["chat_id"])
+        return httpx.Response(200, json={"ok": True, "result": {}})
+
+    store = SubscriberStore(":memory:")
+    store.open()
+    store.select_bot(999)
+    notifier = TelegramBotNotifier(
+        "123:secret",
+        ":memory:",
+        transport=httpx.MockTransport(handler),
+        store=store,
+        quiet_hours=QuietHoursConfig(enabled=True),
+    )
+
+    await notifier.process_update(
+        _update(1, 101, "/start", sent_at=datetime(2026, 8, 22, 23, 0, tzinfo=UTC))
+    )
+    await notifier.process_update(
+        _update(2, 102, "/start", sent_at=datetime(2026, 8, 23, 4, 0, tzinfo=UTC))
+    )
+
+    assert store.list_chat_ids() == (102,)
+    assert replies == [102]
     await notifier.close()
 
 
