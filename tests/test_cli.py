@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 
 import pytest
@@ -60,7 +61,7 @@ def test_configure_logging_hides_only_channel_difference_info(
     assert _DIFFERENCE_LOG_FILTER.filter(matching_warning_record) is True
 
 
-def test_configure_logging_routes_warnings_and_errors_to_stderr(
+def test_configure_logging_routes_structured_warnings_to_stdout_and_errors_to_stderr(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -85,9 +86,13 @@ def test_configure_logging_routes_warnings_and_errors_to_stderr(
     captured = capsys.readouterr()
     assert "diagnostic-debug" in captured.out
     assert "healthy-info" in captured.out
-    assert "useful-warning" not in captured.out
+    assert "useful-warning" in captured.out
     assert "real-error" not in captured.out
-    assert "useful-warning" in captured.err
+    warning_line = next(line for line in captured.out.splitlines() if "useful-warning" in line)
+    warning_payload = json.loads(warning_line)
+    assert warning_payload["level"] == "warn"
+    assert "WARNING test.logging.streams: useful-warning" in warning_payload["message"]
+    assert "useful-warning" not in captured.err
     assert "real-error" in captured.err
     assert "diagnostic-debug" not in captured.err
     assert "healthy-info" not in captured.err

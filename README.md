@@ -281,8 +281,8 @@ Strict Structured Outputs має окрему wire-вимогу: усі properti
 `skip_ai = false` лише після source/filter, deduplication та automatic-forward перевірок.
 Уся AI-операція має один end-to-end budget до 30 секунд. `accept` формує та надсилає один
 alert до Saved Messages або bot subscribers. `reject` формує той самий повний alert, але не
-надсилає його в Telegram: однорядкова безпечна версія записується як `WARNING` у `stderr`,
-тому Railway показує її як warning/error stream. `notify_all` та `skip_ai = true` jobs одразу
+надсилає його в Telegram: однорядкова безпечна версія записується як structured `WARNING` у
+`stdout`, тому Railway розпізнає `level = warn`. `notify_all` та `skip_ai = true` jobs одразу
 переходять до звичайного formatter/delivery без OpenAI request і без `AI analysis:`.
 Telegram retries повторюють вже сформований рядок і не створюють нового OpenAI request.
 Технічні помилки AI-eligible keyword path залишаються fail-open: вихідне повідомлення
@@ -543,8 +543,11 @@ image, але обидва private policy-файли навмисно виклю
 
 За стандартного `LOG_LEVEL=INFO` події одразу виводяться в термінал, без окремого log-файлу:
 
-Рівні `DEBUG` та `INFO` виводяться у `stdout`, а `WARNING`, `ERROR` і `CRITICAL` — у
-`stderr`. Завдяки цьому Railway не позначає звичайні інформаційні повідомлення як помилки.
+Рівні `DEBUG` та `INFO` виводяться у `stdout` як звичайний текст. Кожен `WARNING`
+виводиться у `stdout` як однорядковий JSON із `level = warn` і `message`, щоб Railway
+зберігав його саме як warning. `ERROR` і `CRITICAL` залишаються у `stderr` та мають
+severity `error`. One-shot команда `ai-check` є винятком: її stdout зарезервований для
+result JSON, тому всі diagnostics цієї команди залишаються у `stderr`.
 Логери OpenAI SDK, `httpx` і `httpcore` примусово обмежені рівнем `WARNING`, навіть якщо
 application `LOG_LEVEL=DEBUG`, щоб request options, private policy та message text не
 потрапили в debug output.
@@ -588,7 +591,7 @@ delivery-логи, але не `AI observation completed/failed`, бо observer 
 Семантичний AI log містить `decision`, optional reject-only `reason_code`, timing у секундах
 та безпечні metadata. Після `accept` Telegram delivery продовжується. Після `reject` delivery
 не викликається, а весь сформований alert — message text, source, time, matches, AI reason і
-посилання — записується одним санітизованим `WARNING`-рядком у `stderr` для Railway.
+посилання — записується одним санітизованим structured `WARNING`-рядком у `stdout` для Railway.
 Технічний результат записується на рівні `ERROR`, але саме повідомлення проходить далі за
 fail-open правилом.
 Для `invalid_response` запис також містить однорядковий, обмежений за довжиною
