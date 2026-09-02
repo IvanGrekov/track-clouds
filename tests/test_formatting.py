@@ -80,7 +80,7 @@ def test_renders_plain_text_notification_with_local_time() -> None:
         "Kubernetes release\n\n"
         "Source: Cloud discussion\n"
         "Time: 2026-08-06 15:30:00 EEST\n"
-        "Matches: kubernetes\n\n"
+        "\n"
         "Open: https://t.me/cloud_chat/42"
     )
     assert "Автор:" not in rendered
@@ -93,7 +93,8 @@ def test_notify_all_media_without_caption_has_useful_fallback() -> None:
         max_preview_chars=1_000,
     )
 
-    assert "Filter: усі повідомлення" in rendered
+    assert "Matches:" not in rendered
+    assert "Filter:" not in rendered
     assert "[медіа без підпису]" in rendered
 
 

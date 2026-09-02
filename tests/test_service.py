@@ -226,7 +226,7 @@ async def test_event_flow_filters_enqueues_notifies_and_deduplicates() -> None:
     await monitor._queue.join()
 
     assert len(notifier.sent) == 1
-    assert "Matches: ваканс, k8s" in notifier.sent[0]
+    assert "Matches:" not in notifier.sent[0]
     assert "Нова ВАКАНСІЯ для K8S" in notifier.sent[0]
 
     await monitor.close()
