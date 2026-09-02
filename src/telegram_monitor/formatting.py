@@ -112,18 +112,11 @@ def render_notification(
 ) -> str:
     """Render a plain-text Telegram notification within Telegram's size limit."""
 
-    match_line = (
-        "Matches: " + ", ".join(message.matched_keywords)
-        if message.matched_keywords
-        else "Filter: усі повідомлення"
-    )
     source_title = _truncate(message.source_title, 256)
-    match_line = _truncate(match_line, 768)
     details = "\n".join(
         (
             f"Source: {source_title}",
             f"Time: {_format_time(message.date, timezone_name)}",
-            match_line,
         )
     )
 
