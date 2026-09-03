@@ -1,9 +1,21 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 
-from .matcher import KeywordMatcher, ends_with_question_mark, has_minimum_message_length
+from .matcher import (
+    MIN_MESSAGE_LENGTH,
+    KeywordMatcher,
+    ends_with_question_mark,
+    sanitize_for_validation,
+)
 from .models import ConfigurationError, ResolvedSource, SourceRule
+
+
+@dataclass(frozen=True, slots=True)
+class MatchDecision:
+    matched_keywords: tuple[str, ...] | None
+    reason: str
 
 
 def normalize_username(value: str) -> str:
@@ -100,13 +112,30 @@ class SourceRegistry:
     def get(self, peer_id: int | None) -> ResolvedSource | None:
         return self._sources.get(peer_id) if peer_id is not None else None
 
-    def matches(self, peer_id: int | None, text: str | None) -> tuple[str, ...] | None:
+    def evaluate(self, peer_id: int | None, text: str | None) -> MatchDecision:
         source = self.get(peer_id)
-        if source is None or ends_with_question_mark(text) or not has_minimum_message_length(text):
-            return None
+        if source is None:
+            return MatchDecision(None, "Unknown source")
+        if ends_with_question_mark(text):
+            return MatchDecision(None, "Ends with question mark")
+
+        sanitized = sanitize_for_validation(text)
+        message_length = len(sanitized.strip()) if sanitized is not None else 0
+        if message_length < MIN_MESSAGE_LENGTH:
+            return MatchDecision(None, f"Too short: {message_length}")
+
         matched = self._matchers[source.peer_id].find_matches(text)
         if not source.rule.notify_all and not matched:
-            return None
-        if self._skip_matchers[source.peer_id].find_matches(text):
-            return None
-        return matched
+            return MatchDecision(None, "No matches")
+
+        skip_matches = self._skip_matchers[source.peer_id].find_matches(text)
+        if skip_matches:
+            return MatchDecision(None, "Skip by keywords: " + ", ".join(skip_matches))
+
+        reason = (
+            "Filter: all messages" if source.rule.notify_all else "Matches: " + ", ".join(matched)
+        )
+        return MatchDecision(matched, reason)
+
+    def matches(self, peer_id: int | None, text: str | None) -> tuple[str, ...] | None:
+        return self.evaluate(peer_id, text).matched_keywords
