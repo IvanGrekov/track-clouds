@@ -437,11 +437,17 @@ async def test_skips_automatic_discussion_copy_but_keeps_manual_user_forward() -
 
 
 @pytest.mark.asyncio
-async def test_logs_message_content_only_after_keyword_match(
+async def test_logs_sanitized_message_content_and_filter_reason(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     discussion_id = -1001111111111
-    client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])
+    announcements_id = -1002222222222
+    client = FakeClient(
+        [
+            _dialog(discussion_id, "discussion", "Discussion"),
+            _dialog(announcements_id, "announcements", "Announcements"),
+        ]
+    )
     notifier = FakeNotifier()
     config = MonitorConfig(
         sources=(
@@ -450,6 +456,7 @@ async def test_logs_message_content_only_after_keyword_match(
                 keywords=("k8s",),
                 keywords_to_skip=("spam",),
             ),
+            SourceRule(peer="@announcements", notify_all=True),
         ),
         timezone="UTC",
     )
@@ -465,25 +472,38 @@ async def test_logs_message_content_only_after_keyword_match(
     await monitor.handle_event(FakeEvent(discussion_id, 4, "k8s release"))
     await monitor.handle_event(FakeEvent(-1009999999999, 5, "k8s unrelated source"))
     await monitor.handle_event(FakeEvent(discussion_id, 6, "k8s outgoing", outgoing=True))
+    await monitor.handle_event(FakeEvent(discussion_id, 7, "Хтось знає як 3 слони?"))
+    await monitor.handle_event(FakeEvent(announcements_id, 8, "all messages pass"))
     await monitor._queue.join()
 
     decision_logs = [
         record.getMessage()
         for record in caplog.records
-        if "Match new message" in record.msg or "Skip new message" in record.msg
+        if "Match new message" in record.getMessage() or "Skip new message" in record.getMessage()
     ]
     assert decision_logs == [
-        "Skip new message - 2026-08-06T12:30:00+00:00",
-        "Skip new message - 2026-08-06T12:30:00+00:00",
-        "Skip new message - 2026-08-06T12:30:00+00:00",
-        "Match new message - 2026-08-06T12:30:00+00:00: k8s release",
+        (
+            "Skip new message - 2026-08-06T12:30:00+00:00: "
+            "ordinary spam second line [31m (No matches)"
+        ),
+        (
+            "Skip new message - 2026-08-06T12:30:00+00:00: "
+            "k8s spam advertisement (Skip by keywords: spam)"
+        ),
+        "Skip new message - 2026-08-06T12:30:00+00:00: k8s (Too short: 3)",
+        ("Match new message - 2026-08-06T12:30:00+00:00: k8s release (Matches: k8s)"),
+        (
+            "Skip new message - 2026-08-06T12:30:00+00:00: "
+            "Хтось знає як 3 слони? (Ends with question mark)"
+        ),
+        ("Match new message - 2026-08-06T12:30:00+00:00: all messages pass (Filter: all messages)"),
     ]
-    assert "ordinary spam" not in caplog.text
-    assert "second line" not in caplog.text
-    assert "k8s spam advertisement" not in caplog.text
+    assert "ordinary spam" in caplog.text
+    assert "second line" in caplog.text
+    assert "k8s spam advertisement" in caplog.text
     assert "\x1b" not in caplog.text
     assert "\u202e" not in caplog.text
-    assert len(notifier.sent) == 1
+    assert len(notifier.sent) == 2
     await monitor.close()
 
 

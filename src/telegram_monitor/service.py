@@ -191,11 +191,12 @@ class TelegramMonitor:
             return
 
         key = (chat_id, message_id)
-        matched_keywords = registry.matches(chat_id, text)
+        match_decision = registry.evaluate(chat_id, text)
+        matched_keywords = match_decision.matched_keywords
         if matched_keywords is None:
-            self._log_message(event, key, text=None)
+            self._log_message(event, key, text=text, reason=match_decision.reason, matched=False)
             return
-        self._log_message(event, key, text=text)
+        self._log_message(event, key, text=text, reason=match_decision.reason, matched=True)
         if not self._deduplicator.claim(key):
             return
 
@@ -266,7 +267,10 @@ class TelegramMonitor:
         self,
         event: object,
         key: MessageKey,
-        text: str | None,
+        *,
+        text: str,
+        reason: str,
+        matched: bool,
     ) -> None:
         if not self._message_log_deduplicator.claim(key):
             return
@@ -278,10 +282,6 @@ class TelegramMonitor:
                 message_date = message_date.replace(tzinfo=UTC)
             local_date = message_date.astimezone(ZoneInfo(self._config.timezone))
             local_timestamp = local_date.isoformat(timespec="seconds")
-            if text is None:
-                LOGGER.info("Skip new message - %s", local_timestamp)
-                return
-
             preview = _safe_log_text(text, max_chars=500)
             if preview == "-":
                 event_message = getattr(event, "message", None)
@@ -290,10 +290,13 @@ class TelegramMonitor:
                     if bool(getattr(event_message, "media", None))
                     else "[empty message]"
                 )
+            safe_reason = _safe_log_text(reason, max_chars=500)
             LOGGER.info(
-                "Match new message - %s: %s",
+                "%s new message - %s: %s (%s)",
+                "Match" if matched else "Skip",
                 local_timestamp,
                 preview,
+                safe_reason,
             )
         except Exception:
             LOGGER.exception("Could not render message decision log for %s/%s", *key)

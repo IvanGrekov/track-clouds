@@ -66,6 +66,17 @@ def test_resolves_username_and_numeric_id_and_applies_rules() -> None:
     assert registry.matches(-1002222222222, "Sponsored post") is None
     assert registry.matches(-1009999999999, "k8s") is None
 
+    assert registry.evaluate(-1001111111111, "K8S release").reason == "Matches: k8s"
+    assert registry.evaluate(-1001111111111, "K8S SPAM release").reason == (
+        "Skip by keywords: spam"
+    )
+    assert registry.evaluate(-1001111111111, "nothing useful").reason == "No matches"
+    assert registry.evaluate(-1002222222222, "short").reason == "Too short: 5"
+    assert registry.evaluate(-1002222222222, "Is it ready? 🙂) ").reason == (
+        "Ends with question mark"
+    )
+    assert registry.evaluate(-1002222222222, "1234567890").reason == ("Filter: all messages")
+
 
 def test_resolves_active_secondary_username() -> None:
     dialog = _dialog(
