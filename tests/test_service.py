@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Coroutine
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -252,6 +253,7 @@ async def test_replayed_quiet_hours_messages_are_discarded_before_ai_or_delivery
         notifier,
         ai_observer=observer,
         accept_events_since=datetime(2026, 8, 23, 4, 0, tzinfo=UTC),
+        now=lambda: datetime(2026, 8, 23, 4, 10, tzinfo=UTC),
     )
     await monitor.prepare()
 
@@ -1075,3 +1077,238 @@ async def test_quiet_hours_shutdown_cancels_in_flight_ai_and_discards_queue() ->
     assert observation_cancelled.is_set()
     assert notifier.sent == []
     assert notifier.closed is True
+
+
+@pytest.mark.asyncio
+async def test_quiet_hours_pause_discards_alerts_and_resumes_without_closing_clients() -> None:
+    discussion_id = -1001111111111
+    client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])
+    current = datetime(2026, 8, 22, 22, 29, tzinfo=UTC)
+    config = MonitorConfig(
+        sources=(SourceRule(peer="@discussion", keywords=("k8s",)),),
+        timezone="UTC",
+        quiet_hours=QuietHoursConfig(enabled=True),
+        ai_observation=AIObservationConfig(enabled=True),
+    )
+    notifier = FakeNotifier()
+    first_started = asyncio.Event()
+    cancelled = asyncio.Event()
+    observed: list[int] = []
+
+    class BlockingObserver:
+        async def observe(
+            self,
+            snapshot: MessageSnapshot,
+            *,
+            trusted_area_context: str | None,
+        ) -> AIObservationReport:
+            observed.append(snapshot.message_id)
+            if len(observed) == 1:
+                first_started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
+            return _success_report()
+
+        async def close(self) -> None:
+            return None
+
+    monitor = TelegramMonitor(
+        client, config, notifier, ai_observer=BlockingObserver(), now=lambda: current
+    )
+    await monitor.prepare()
+    first = FakeEvent(discussion_id, 71, "k8s in flight")
+    first.date = current
+    await monitor.handle_event(first)
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+    queued = FakeEvent(discussion_id, 72, "k8s queued")
+    queued.date = current
+    await monitor.handle_event(queued)
+
+    current = datetime(2026, 8, 22, 22, 30, tzinfo=UTC)
+    await monitor.pause_notifications()
+    await asyncio.wait_for(monitor._queue.join(), timeout=1)
+    assert cancelled.is_set()
+    assert not notifier.closed
+    assert not client.removed
+
+    during_quiet = FakeEvent(discussion_id, 73, "k8s during quiet")
+    during_quiet.date = current
+    await monitor.handle_event(during_quiet)
+    assert monitor._queue.empty()
+
+    current = datetime(2026, 8, 23, 4, 0, tzinfo=UTC)
+    monitor.resume_notifications()
+    await monitor.handle_event(queued)
+    await monitor.handle_event(during_quiet)
+    active = FakeEvent(discussion_id, 74, "k8s active")
+    active.date = current
+    await monitor.handle_event(active)
+    await asyncio.wait_for(monitor._queue.join(), timeout=1)
+
+    assert observed == [71, 74]
+    assert len(notifier.sent) == 1
+    assert "k8s active" in notifier.sent[0]
+    await monitor.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_pause_does_not_swallow_shutdown_cancellation() -> None:
+    discussion_id = -1001111111111
+    client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])
+    config = MonitorConfig(
+        sources=(SourceRule(peer="@discussion", keywords=("k8s",)),),
+        ai_observation=AIObservationConfig(enabled=True),
+    )
+    started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    finish_cleanup = asyncio.Event()
+
+    class SlowCancellationObserver:
+        async def observe(
+            self,
+            snapshot: MessageSnapshot,
+            *,
+            trusted_area_context: str | None,
+        ) -> AIObservationReport:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cleanup_started.set()
+                await finish_cleanup.wait()
+                raise
+            raise AssertionError("unreachable")
+
+        async def close(self) -> None:
+            return None
+
+    notifier = FakeNotifier()
+    monitor = TelegramMonitor(client, config, notifier, ai_observer=SlowCancellationObserver())
+    await monitor.prepare()
+    await monitor.handle_event(FakeEvent(discussion_id, 75, "k8s in flight"))
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    pause = asyncio.create_task(monitor.pause_notifications())
+    await asyncio.wait_for(cleanup_started.wait(), timeout=1)
+    pause.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(pause, timeout=1)
+    finish_cleanup.set()
+    await asyncio.wait_for(monitor.close(discard_pending=True), timeout=1)
+    assert notifier.closed
+
+
+@pytest.mark.asyncio
+async def test_monitor_started_during_quiet_hours_discards_startup_events() -> None:
+    discussion_id = -1001111111111
+    client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])
+    current = datetime(2026, 8, 22, 23, 0, tzinfo=UTC)
+    config = MonitorConfig(
+        sources=(SourceRule(peer="@discussion", keywords=("k8s",)),),
+        quiet_hours=QuietHoursConfig(enabled=True),
+    )
+    notifier = FakeNotifier()
+    monitor = TelegramMonitor(client, config, notifier, now=lambda: current)
+    monitor.start_capture()
+    overnight = FakeEvent(discussion_id, 80, "k8s overnight")
+    overnight.date = current
+    await monitor.handle_event(overnight)
+    await monitor.prepare()
+    await monitor.handle_event(overnight)
+    assert monitor._queue.empty()
+    assert notifier.started
+
+    current = datetime(2026, 8, 23, 4, 0, tzinfo=UTC)
+    monitor.resume_notifications()
+    await monitor.handle_event(overnight)
+    active = FakeEvent(discussion_id, 81, "k8s active")
+    active.date = current
+    await monitor.handle_event(active)
+    await asyncio.wait_for(monitor._queue.join(), timeout=1)
+    assert len(notifier.sent) == 1
+    assert "k8s active" in notifier.sent[0]
+    await monitor.close()
+
+
+@pytest.mark.asyncio
+async def test_alerts_queued_before_quiet_are_not_replayed_after_slow_startup() -> None:
+    discussion_id = -1001111111111
+    client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])
+    current = datetime(2026, 8, 22, 22, 29, tzinfo=UTC)
+    started = asyncio.Event()
+    finish = asyncio.Event()
+
+    class SlowNotifier(FakeNotifier):
+        async def start(self) -> None:
+            started.set()
+            await finish.wait()
+            self.started = True
+
+    config = MonitorConfig(
+        sources=(SourceRule(peer="@discussion", keywords=("k8s",)),),
+        quiet_hours=QuietHoursConfig(enabled=True),
+    )
+    notifier = SlowNotifier()
+    monitor = TelegramMonitor(client, config, notifier, now=lambda: current)
+    prepare = asyncio.create_task(monitor.prepare())
+    await asyncio.wait_for(started.wait(), timeout=1)
+    event = FakeEvent(discussion_id, 82, "k8s queued before quiet")
+    event.date = current
+    await monitor.handle_event(event)
+
+    current = datetime(2026, 8, 23, 4, 0, tzinfo=UTC)
+    finish.set()
+    await asyncio.wait_for(prepare, timeout=1)
+    await asyncio.wait_for(monitor._queue.join(), timeout=1)
+    assert notifier.sent == []
+    await monitor.close()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_stops_flushing_when_quiet_hours_begin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    discussion_id = -1001111111111
+    client = FakeClient([_dialog(discussion_id, "discussion", "Discussion")])
+    current = datetime(2026, 8, 22, 22, 29, 59, tzinfo=UTC)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    class SlowNotifier(FakeNotifier):
+        async def send(self, text: str) -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+    config = MonitorConfig(
+        sources=(SourceRule(peer="@discussion", keywords=("k8s",)),),
+        quiet_hours=QuietHoursConfig(enabled=True),
+    )
+    notifier = SlowNotifier()
+    monitor = TelegramMonitor(client, config, notifier, now=lambda: current)
+    await monitor.prepare()
+    event = FakeEvent(discussion_id, 83, "k8s pending delivery")
+    event.date = current
+    await monitor.handle_event(event)
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    async def timeout_at_quiet(
+        awaitable: Coroutine[object, object, None], timeout: float | None
+    ) -> None:
+        nonlocal current
+        assert timeout == 1
+        awaitable.close()
+        current = datetime(2026, 8, 22, 22, 30, tzinfo=UTC)
+        raise TimeoutError
+
+    monkeypatch.setattr(service_module.asyncio, "wait_for", timeout_at_quiet)
+    await monitor.close()
+    assert cancelled.is_set()
+    assert notifier.closed
+    assert notifier.sent == []

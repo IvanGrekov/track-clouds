@@ -7,13 +7,14 @@ import os
 import unicodedata
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
-from datetime import UTC, datetime
 from typing import ParamSpec, Protocol, TypeVar
 
 import httpx
 from dotenv import load_dotenv
+from telethon.errors import RPCError
 
-from .models import ChatRef, ConfigurationError, QuietHoursConfig
+from .event_search import EventSearch, EventSearchAccessDenied, EventSearchError
+from .models import ChatRef, ConfigurationError
 from .subscriber_store import Subscriber, SubscriberStore, SubscriptionResult
 
 LOGGER = logging.getLogger(__name__)
@@ -187,7 +188,7 @@ class TelegramBotNotifier:
         transport: httpx.AsyncBaseTransport | None = None,
         store: SubscriberStore | None = None,
         on_polling_fatal: Callable[[], Awaitable[object]] | None = None,
-        quiet_hours: QuietHoursConfig | None = None,
+        event_search: EventSearch | None = None,
     ) -> None:
         self._api = TelegramBotApi(token, transport=transport)
         self._store = store or SubscriberStore(database_path, subscriber_limit)
@@ -197,7 +198,8 @@ class TelegramBotNotifier:
         self._delivery_retry_max_seconds = delivery_retry_max_seconds
         self._poll_timeout_seconds = poll_timeout_seconds
         self._on_polling_fatal = on_polling_fatal
-        self._quiet_hours = quiet_hours or QuietHoursConfig()
+        self._event_search = event_search
+        self._bot_username: str | None = None
         self._poll_task: asyncio.Task[None] | None = None
         self._poll_ready = asyncio.Event()
         self._closed = False
@@ -212,7 +214,7 @@ class TelegramBotNotifier:
         delivery_retry_base_seconds: float = 1.0,
         delivery_retry_max_seconds: float = 30.0,
         on_polling_fatal: Callable[[], Awaitable[object]] | None = None,
-        quiet_hours: QuietHoursConfig | None = None,
+        event_search: EventSearch | None = None,
     ) -> TelegramBotNotifier:
         load_dotenv()
         token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -226,7 +228,7 @@ class TelegramBotNotifier:
             delivery_retry_base_seconds=delivery_retry_base_seconds,
             delivery_retry_max_seconds=delivery_retry_max_seconds,
             on_polling_fatal=on_polling_fatal,
-            quiet_hours=quiet_hours,
+            event_search=event_search,
         )
 
     async def start(self) -> None:
@@ -245,6 +247,7 @@ class TelegramBotNotifier:
         bot_id = bot_user.get("id")
         if isinstance(bot_id, bool) or not isinstance(bot_id, int):
             raise ConfigurationError("Telegram Bot API getMe response has no valid bot ID")
+        self._bot_username = _optional_text(bot_user.get("username"))
         await _run_blocking(self._store.select_bot, bot_id)
         webhook_url = webhook.get("url")
         if isinstance(webhook_url, str) and webhook_url:
@@ -359,20 +362,6 @@ class TelegramBotNotifier:
         if command not in ("/start", "/stop", "/events"):
             return
 
-        if self._quiet_hours.enabled:
-            raw_message_date = message.get("date")
-            if isinstance(raw_message_date, bool) or not isinstance(raw_message_date, int):
-                LOGGER.warning("Ignoring Bot API command without a valid quiet-hours timestamp")
-                return
-            try:
-                message_date = datetime.fromtimestamp(raw_message_date, UTC)
-            except (OverflowError, OSError, ValueError):
-                LOGGER.warning("Ignoring Bot API command without a valid quiet-hours timestamp")
-                return
-            if self._quiet_hours.contains(message_date):
-                LOGGER.info("Ignoring Bot API %s command received during quiet hours", command)
-                return
-
         sender = message.get("from")
         sender_data = sender if isinstance(sender, Mapping) else {}
         if command == "/events":
@@ -390,15 +379,48 @@ class TelegramBotNotifier:
 
             username = _optional_text(sender_data.get("username"))
             user_id = _optional_int(sender_data.get("id"))
-            user = (
-                _safe_log_value(username)
-                if username and username.strip()
-                else str(user_id if user_id is not None else chat_id)
-            )
+            if user_id is None or user_id != chat_id:
+                LOGGER.warning("Ignoring /events command without a valid private-chat sender")
+                await self._reply_to_command(
+                    chat_id, command, "Не вдалося підтвердити ваш Telegram акаунт."
+                )
+                return
+            try:
+                if self._event_search is None:
+                    raise EventSearchError("Event history search is not configured")
+                if self._bot_username is None:
+                    bot_user = await self._api.get_me()
+                    self._bot_username = _optional_text(bot_user.get("username"))
+                if self._bot_username is None:
+                    raise EventSearchError("The bot has no username")
+                count = await self._event_search.count_matches(
+                    user_id, self._bot_username, location
+                )
+            except EventSearchAccessDenied:
+                LOGGER.warning("Denied /events command for chat_id=%s", chat_id)
+                await self._reply_to_command(
+                    chat_id,
+                    command,
+                    "Пошук доступний лише власнику підключеного Telegram акаунта.",
+                )
+                return
+            except (EventSearchError, NotificationError, RPCError, OSError, ValueError) as error:
+                LOGGER.error(
+                    "Could not search Telegram bot history (chat_id=%s, error_type=%s)",
+                    chat_id,
+                    type(error).__name__,
+                )
+                await self._reply_to_command(
+                    chat_id, command, "Не вдалося виконати пошук. Спробуйте пізніше."
+                )
+                return
+
+            user = _safe_log_value(username) if username and username.strip() else str(user_id)
             LOGGER.info(
-                "User(%s) requested events for location(%s)",
+                "User(%s) requested events for location(%s). Matches: %d",
                 json.dumps(user, ensure_ascii=False),
                 json.dumps(_safe_log_value(location, max_chars=4096), ensure_ascii=False),
+                count,
             )
             return
 

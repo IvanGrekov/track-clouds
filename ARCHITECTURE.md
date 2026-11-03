@@ -21,7 +21,7 @@ Telegram Keyword Monitor — це окремий event-driven Python-серві�
 |---|---|---|
 | Runtime | Python 3.11+ та `asyncio` | Асинхронний listener, черги, polling і graceful shutdown |
 | Telegram user client | Telethon 1.44+ | MTProto-підключення від імені звичайного акаунта та `NewMessage` events |
-| Telegram bot client | Telegram Bot API через HTTPX | `/start`, `/stop` та push-розсилка підписникам |
+| Telegram bot client | Telegram Bot API через HTTPX | `/start`, `/stop`, `/events` та push-розсилка підписникам |
 | Конфігурація секретів | `python-dotenv` | Завантаження `.env` |
 | Business-конфіг | TOML через стандартний `tomllib` | Локальні джерела, фільтри та runtime-параметри |
 | AI observation contract | UTF-8 text + strict JSON Schema | Поточні system prompt і response schema, приватна base policy з optional extension, typed result і reproducible hash |
@@ -78,7 +78,7 @@ flowchart LR
     ALERT -->|"bot mode"| BOT
     BOT --> API
     API --> PEOPLE
-    API -->|"getUpdates: /start, /stop"| BOT
+    API -->|"getUpdates: /start, /stop, /events"| BOT
     BOT <--> DB
 ```
 
@@ -329,7 +329,16 @@ messages із private chat.
 - Повторний `/start` оновлює metadata й не займає другий слот.
 - Після 10 активних користувачів новий отримує повідомлення про перевищення ліміту.
 - `/stop` видаляє запис і звільняє слот.
+- `/events <місце>` доступна і під час quiet hours лише власнику Telethon-сесії: через наявний user client
+  виконується server-side text search у його особистому чаті з ботом. Повідомлення за останні
+  10 діб, крім повідомлень користувача, підраховуються і логуються; результати не зберігаються.
+  Помилка пошуку не перетворюється на нуль збігів.
 - Group-команди та інший текст ігноруються.
+
+Під час quiet hours Telethon і Bot API залишаються підключеними, а bot-команди обробляються
+як зазвичай. Monitor скасовує поточний alert worker і відкидає чергу та monitored messages.
+Після завершення інтервалу worker запускається знову; timestamp cutoff не
+дозволяє повторно обробити відкинуті повідомлення.
 
 Ліміт реалізований SQLite-транзакцією `BEGIN IMMEDIATE`: перевірка існуючого запису,
 `COUNT(*)` та `INSERT` виконуються під одним write lock. Тому два одночасні `/start` не можуть
