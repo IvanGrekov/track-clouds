@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import unicodedata
@@ -272,7 +273,7 @@ class TelegramBotNotifier:
                 await ready_waiter
         subscriber_count = len(await _run_blocking(self._store.list_chat_ids))
         LOGGER.info(
-            "Bot command polling started; Accepting /start and /stop "
+            "Bot command polling started; Accepting /start, /stop and /events "
             "(subscriber limit: %d); Current subscribers: %d",
             self._subscriber_limit,
             subscriber_count,
@@ -352,9 +353,10 @@ class TelegramBotNotifier:
         if isinstance(chat_id, bool) or not isinstance(chat_id, int) or not isinstance(text, str):
             return
 
-        command_token = text.strip().split(maxsplit=1)[0].casefold() if text.strip() else ""
+        parts = text.strip().split(maxsplit=1)
+        command_token = parts[0].casefold() if parts else ""
         command = command_token.split("@", maxsplit=1)[0]
-        if command not in ("/start", "/stop"):
+        if command not in ("/start", "/stop", "/events"):
             return
 
         if self._quiet_hours.enabled:
@@ -371,9 +373,36 @@ class TelegramBotNotifier:
                 LOGGER.info("Ignoring Bot API %s command received during quiet hours", command)
                 return
 
-        await _run_blocking(self._store.open)
         sender = message.get("from")
         sender_data = sender if isinstance(sender, Mapping) else {}
+        if command == "/events":
+            location = parts[1] if len(parts) > 1 else ""
+            if not any(
+                not character.isspace() and not unicodedata.category(character).startswith("C")
+                for character in location
+            ):
+                await self._reply_to_command(
+                    chat_id,
+                    command,
+                    "Вкажіть місце, наприклад: /events галицьке",
+                )
+                return
+
+            username = _optional_text(sender_data.get("username"))
+            user_id = _optional_int(sender_data.get("id"))
+            user = (
+                _safe_log_value(username)
+                if username and username.strip()
+                else str(user_id if user_id is not None else chat_id)
+            )
+            LOGGER.info(
+                "User(%s) requested events for location(%s)",
+                json.dumps(user, ensure_ascii=False),
+                json.dumps(_safe_log_value(location, max_chars=4096), ensure_ascii=False),
+            )
+            return
+
+        await _run_blocking(self._store.open)
         subscriber = Subscriber(
             chat_id=chat_id,
             user_id=_optional_int(sender_data.get("id")),
@@ -406,6 +435,9 @@ class TelegramBotNotifier:
                 else "ℹ️ Ви ще не були підписані на сповіщення."
             )
 
+        await self._reply_to_command(chat_id, command, reply)
+
+    async def _reply_to_command(self, chat_id: int, command: str, reply: str) -> None:
         reply_delivered = await self._send_with_retries(
             chat_id,
             reply,
