@@ -3,17 +3,26 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable, Callable, Mapping
-from datetime import UTC, datetime
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
+from telethon import types
 
 import telegram_monitor.app as app
-from telegram_monitor.event_search import EventSearch, EventSearchAccessDenied, EventSearchError
+from telegram_monitor.event_search import (
+    EventSearch,
+    EventSearchAccessDenied,
+    EventSearchError,
+    EventSearchResult,
+    TelegramEventSearch,
+)
 from telegram_monitor.models import ConfigurationError, MonitorConfig, QuietHoursConfig, SourceRule
 from telegram_monitor.notifier import TelegramBotNotifier
-from telegram_monitor.subscriber_store import SubscriberStore
+from telegram_monitor.subscriber_store import SubscriberStore, event_reply_fingerprint
 
 
 def _update(
@@ -43,21 +52,43 @@ def _update(
 
 
 class FakeEventSearch:
-    def __init__(self, *, count: int = 0, error: Exception | None = None) -> None:
+    def __init__(
+        self, *, count: int = 0, error: Exception | None = None, message_json: str = "{}"
+    ) -> None:
         self.count = count
         self.error = error
+        self.message_json = message_json
         self.calls: list[tuple[int, str, str]] = []
+        self.exclusions: list[frozenset[str]] = []
 
-    async def count_matches(self, requester_id: int, bot_username: str, location: str) -> int:
+    async def find_matches(
+        self,
+        requester_id: int,
+        bot_username: str,
+        location: str,
+        excluded_replies: frozenset[str],
+    ) -> EventSearchResult | None:
         self.calls.append((requester_id, bot_username, location))
+        self.exclusions.append(excluded_replies)
         if self.error is not None:
             raise self.error
-        return self.count
+        if not self.count:
+            return None
+        return EventSearchResult(
+            self.count,
+            datetime(2026, 8, 6, 12, 30, tzinfo=UTC),
+            datetime(2026, 8, 7, 12, 30, tzinfo=UTC),
+            self.message_json,
+        )
 
 
 async def _bot_info_handler(request: httpx.Request) -> httpx.Response:
-    assert request.url.path.endswith("/getMe")
-    return httpx.Response(200, json={"ok": True, "result": {"id": 999, "username": "ExampleBot"}})
+    if request.url.path.endswith("/getMe"):
+        return httpx.Response(
+            200, json={"ok": True, "result": {"id": 999, "username": "ExampleBot"}}
+        )
+    assert request.url.path.endswith("/sendMessage")
+    return httpx.Response(200, json={"ok": True, "result": {}})
 
 
 @pytest.mark.asyncio
@@ -189,6 +220,8 @@ async def test_events_without_location_replies_with_usage(
     caplog.set_level(logging.INFO, logger="telegram_monitor.notifier")
 
     async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/getMe"):
+            return await _bot_info_handler(request)
         payload = json.loads(request.content)
         replies.append((payload["chat_id"], payload["text"]))
         return httpx.Response(200, json={"ok": True, "result": {}})
@@ -227,6 +260,172 @@ async def test_events_does_not_change_subscriptions(caplog: pytest.LogCaptureFix
 
     assert store.list_chat_ids() == ()
     assert 'User("user101") requested events for location("галицьке"). Matches: 0' in caplog.text
+    await notifier.close()
+
+
+@pytest.mark.asyncio
+async def test_events_sends_result_and_zero_matches_without_logging_message_content(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    replies: list[str] = []
+    caplog.set_level(logging.INFO, logger="telegram_monitor.notifier")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/getMe"):
+            return await _bot_info_handler(request)
+        replies.append(json.loads(request.content)["text"])
+        return httpx.Response(200, json={"ok": True, "result": {}})
+
+    search = FakeEventSearch(count=1, message_json='{\n  "message": "приватний текст"\n}')
+    notifier = TelegramBotNotifier(
+        "123:secret",
+        ":memory:",
+        transport=httpx.MockTransport(handler),
+        event_search=search,
+        timezone_name="Europe/Kyiv",
+    )
+    await notifier.process_update(_update(1, 101, "/events галицьке"))
+    search.count = 0
+    await notifier.process_update(_update(2, 101, "/events інше"))
+
+    assert replies == [
+        "Кількість співпадінь за період 2026-08-06 15:30:00 EEST – "
+        '2026-08-07 15:30:00 EEST: 1. Last message:\n{\n  "message": "приватний текст"\n}',
+        "Кількість співпадінь за останні 10 днів: 0. Last message: відсутнє",
+    ]
+    assert "приватний текст" not in caplog.text
+    assert event_reply_fingerprint(replies[0]) in search.exclusions[1]
+    await notifier.close()
+
+
+@pytest.mark.asyncio
+async def test_events_excludes_every_multipart_reply_after_restart(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    original = types.Message(
+        id=1,
+        peer_id=types.PeerUser(999),
+        from_id=types.PeerUser(999),
+        date=now - timedelta(hours=1),
+        message="галицьке 😀 " * 1200,
+    )
+    history = [original]
+    replies: list[str] = []
+
+    class HistoryClient:
+        async def get_me(self) -> SimpleNamespace:
+            return SimpleNamespace(id=101)
+
+        async def iter_messages(
+            self, bot_username: str, *, limit: int | None, search: str
+        ) -> AsyncIterator[types.Message]:
+            assert bot_username == "ExampleBot"
+            assert limit is None
+            for message in history:
+                if search in message.message:
+                    yield message
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/getMe"):
+            return await _bot_info_handler(request)
+        text = json.loads(request.content)["text"]
+        replies.append(text)
+        history.insert(
+            0,
+            types.Message(
+                id=len(replies) + 1,
+                peer_id=types.PeerUser(999),
+                from_id=types.PeerUser(999),
+                date=now,
+                message=text,
+            ),
+        )
+        return httpx.Response(200, json={"ok": True, "result": {}})
+
+    database = str(tmp_path / "subscribers.sqlite3")
+    search = TelegramEventSearch(HistoryClient(), now=lambda: now)
+    notifier = TelegramBotNotifier(
+        "123:secret", database, transport=httpx.MockTransport(handler), event_search=search
+    )
+    await notifier.process_update(_update(1, 101, "/events галицьке"))
+    first_parts = replies.copy()
+    assert len(first_parts) > 1
+    assert all(len(part.encode("utf-16-le")) // 2 <= 4096 for part in first_parts)
+    await notifier.close()
+
+    notifier = TelegramBotNotifier(
+        "123:secret", database, transport=httpx.MockTransport(handler), event_search=search
+    )
+    await notifier.process_update(_update(2, 101, "/events галицьке"))
+    assert replies[len(first_parts) :] == first_parts
+    await notifier.close()
+
+
+@pytest.mark.asyncio
+async def test_events_reports_partial_delivery_and_records_failed_part(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    attempted: list[str] = []
+    caplog.set_level(logging.ERROR, logger="telegram_monitor.notifier")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/getMe"):
+            return await _bot_info_handler(request)
+        attempted.append(json.loads(request.content)["text"])
+        assert event_reply_fingerprint(attempted[-1]) in store.event_reply_fingerprints(101)
+        if len(attempted) == 2:
+            return httpx.Response(
+                400, json={"ok": False, "error_code": 400, "description": "bad request"}
+            )
+        return httpx.Response(200, json={"ok": True, "result": {}})
+
+    store = SubscriberStore(":memory:")
+    notifier = TelegramBotNotifier(
+        "123:secret",
+        ":memory:",
+        transport=httpx.MockTransport(handler),
+        store=store,
+        delivery_attempts=1,
+        event_search=FakeEventSearch(count=1, message_json=json.dumps({"message": "a" * 10000})),
+    )
+    await notifier.process_update(_update(1, 101, "/events галицьке"))
+    assert len(attempted) == 3
+    assert attempted[-1] == "Не вдалося повністю надіслати результат пошуку. Спробуйте ще раз."
+    assert {event_reply_fingerprint(text) for text in attempted} <= store.event_reply_fingerprints(
+        101
+    )
+    assert "Bot command reply was not delivered" in caplog.text
+    await notifier.close()
+
+
+@pytest.mark.asyncio
+async def test_events_does_not_send_if_reply_fingerprint_cannot_be_saved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent = False
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal sent
+        if request.url.path.endswith("/getMe"):
+            return await _bot_info_handler(request)
+        sent = True
+        return httpx.Response(200, json={"ok": True, "result": {}})
+
+    store = SubscriberStore(":memory:")
+
+    def fail_recording(chat_id: int, text: str) -> None:
+        raise OSError("storage unavailable")
+
+    monkeypatch.setattr(store, "record_event_reply", fail_recording)
+    notifier = TelegramBotNotifier(
+        "123:secret",
+        ":memory:",
+        transport=httpx.MockTransport(handler),
+        store=store,
+        event_search=FakeEventSearch(count=1),
+    )
+    with pytest.raises(OSError, match="storage unavailable"):
+        await notifier.process_update(_update(1, 101, "/events галицьке"))
+    assert not sent
     await notifier.close()
 
 
@@ -274,6 +473,8 @@ async def test_events_rejects_missing_or_mismatched_sender() -> None:
     replies: list[str] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/getMe"):
+            return await _bot_info_handler(request)
         replies.append(json.loads(request.content)["text"])
         return httpx.Response(200, json={"ok": True, "result": {}})
 
@@ -330,7 +531,7 @@ async def test_commands_with_quiet_hours_timestamps_are_processed(
     await notifier.process_update(_update(4, 101, "/stop"))
 
     assert store.list_chat_ids() == (102,)
-    assert replies == [101, 102, 101]
+    assert replies == [101, 102, 103, 101]
     assert 'User("user103") requested events for location("галицьке"). Matches: 3' in caplog.text
     await notifier.close()
 
@@ -344,17 +545,25 @@ async def test_events_search_continues_across_quiet_hours_boundary(
     finish = asyncio.Event()
     current = datetime(2026, 8, 22, 22, 29, tzinfo=UTC)
 
-    class SlowSearch:
-        async def count_matches(self, requester_id: int, bot_username: str, location: str) -> int:
+    class SlowSearch(FakeEventSearch):
+        async def find_matches(
+            self,
+            requester_id: int,
+            bot_username: str,
+            location: str,
+            excluded_replies: frozenset[str],
+        ) -> EventSearchResult | None:
             started.set()
             await finish.wait()
-            return 4
+            return await super().find_matches(
+                requester_id, bot_username, location, excluded_replies
+            )
 
     notifier = TelegramBotNotifier(
         "123:secret",
         ":memory:",
         transport=httpx.MockTransport(_bot_info_handler),
-        event_search=SlowSearch(),
+        event_search=SlowSearch(count=4),
     )
     task = asyncio.create_task(
         notifier.process_update(_update(1, 101, "/events галицьке", sent_at=current))
@@ -400,7 +609,9 @@ async def test_all_supported_commands_work_with_quiet_hours_timestamps(
 
     assert search.calls == [(101, "ExampleBot", "галицьке"), (101, "ExampleBot", "місто")]
     assert 'User("user101") requested events for location("галицьке"). Matches: 2' in caplog.text
-    assert replies == ["✅ Ви підписалися на сповіщення.", "🔕 Ви відписалися від сповіщень."]
+    assert replies[:2] == ["✅ Ви підписалися на сповіщення.", "🔕 Ви відписалися від сповіщень."]
+    assert len(replies) == 4
+    assert all("Кількість співпадінь" in reply for reply in replies[2:])
     assert store.list_chat_ids() == ()
     await notifier.close()
 
@@ -563,6 +774,7 @@ async def test_poller_processes_all_commands_with_quiet_hours_enabled(
         delivery_retry_max_seconds: float,
         on_polling_fatal: Callable[[], Awaitable[object]] | None,
         event_search: EventSearch,
+        timezone_name: str,
     ) -> TelegramBotNotifier:
         return TelegramBotNotifier(
             "123:secret",
@@ -575,6 +787,7 @@ async def test_poller_processes_all_commands_with_quiet_hours_enabled(
             delivery_retry_max_seconds=delivery_retry_max_seconds,
             on_polling_fatal=on_polling_fatal,
             event_search=search,
+            timezone_name=timezone_name,
         )
 
     monkeypatch.setattr(TelegramBotNotifier, "from_environment", create_notifier)
@@ -586,7 +799,9 @@ async def test_poller_processes_all_commands_with_quiet_hours_enabled(
     assert store.get_next_update_offset() == 13
     assert search.calls == [(101, "ExampleBot", "галицьке")]
     assert 'User("user101") requested events for location("галицьке"). Matches: 5' in caplog.text
-    assert replies == ["✅ Ви підписалися на сповіщення.", "🔕 Ви відписалися від сповіщень."]
+    assert replies[0] == "✅ Ви підписалися на сповіщення."
+    assert "Кількість співпадінь" in replies[1]
+    assert replies[2] == "🔕 Ви відписалися від сповіщень."
     await notifier.close()
 
 

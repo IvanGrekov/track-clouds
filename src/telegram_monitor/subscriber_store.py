@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from threading import RLock
@@ -20,6 +21,10 @@ class Subscriber:
     user_id: int | None
     username: str | None
     first_name: str | None
+
+
+def event_reply_fingerprint(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 class SubscriberStore:
@@ -77,6 +82,17 @@ class SubscriberStore:
                         key TEXT NOT NULL,
                         value INTEGER NOT NULL,
                         PRIMARY KEY (bot_id, key)
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS event_replies (
+                        bot_id INTEGER NOT NULL,
+                        chat_id INTEGER NOT NULL,
+                        fingerprint TEXT NOT NULL,
+                        recorded_at TEXT NOT NULL,
+                        PRIMARY KEY (bot_id, chat_id, fingerprint)
                     )
                     """
                 )
@@ -216,6 +232,32 @@ class SubscriberStore:
                 """,
                 (bot_id, offset),
             )
+
+    def record_event_reply(self, chat_id: int, text: str) -> None:
+        with self._lock:
+            bot_id = self._require_bot_id()
+            connection = self._require_connection()
+            connection.execute(
+                """
+                INSERT INTO event_replies (bot_id, chat_id, fingerprint, recorded_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(bot_id, chat_id, fingerprint)
+                DO UPDATE SET recorded_at = excluded.recorded_at
+                """,
+                (bot_id, chat_id, event_reply_fingerprint(text), datetime.now(UTC).isoformat()),
+            )
+
+    def event_reply_fingerprints(self, chat_id: int) -> frozenset[str]:
+        with self._lock:
+            bot_id = self._require_bot_id()
+            connection = self._require_connection()
+            cutoff = (datetime.now(UTC) - timedelta(days=11)).isoformat()
+            connection.execute("DELETE FROM event_replies WHERE recorded_at < ?", (cutoff,))
+            rows = connection.execute(
+                "SELECT fingerprint FROM event_replies WHERE bot_id = ? AND chat_id = ?",
+                (bot_id, chat_id),
+            )
+            return frozenset(str(row["fingerprint"]) for row in rows)
 
     def close(self) -> None:
         with self._lock:

@@ -150,6 +150,7 @@ def test_bot_notifier_uses_the_existing_client_for_event_search(
     search = captured["event_search"]
     assert isinstance(search, TelegramEventSearch)
     assert search._client is client
+    assert captured["timezone_name"] == _config().timezone
 
 
 @pytest.mark.asyncio
