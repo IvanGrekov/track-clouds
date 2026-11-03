@@ -14,6 +14,14 @@ from dotenv import load_dotenv
 from telethon.errors import RPCError
 
 from .event_search import EventSearch, EventSearchAccessDenied, EventSearchError
+from .formatting import (
+    EVENTS_ACCESS_DENIED_REPLY,
+    EVENTS_INVALID_SENDER_REPLY,
+    EVENTS_SEARCH_ERROR_REPLY,
+    EVENTS_USAGE_REPLY,
+    render_event_search_result,
+    split_event_search_reply,
+)
 from .models import ChatRef, ConfigurationError
 from .subscriber_store import Subscriber, SubscriberStore, SubscriptionResult
 
@@ -189,6 +197,7 @@ class TelegramBotNotifier:
         store: SubscriberStore | None = None,
         on_polling_fatal: Callable[[], Awaitable[object]] | None = None,
         event_search: EventSearch | None = None,
+        timezone_name: str = "UTC",
     ) -> None:
         self._api = TelegramBotApi(token, transport=transport)
         self._store = store or SubscriberStore(database_path, subscriber_limit)
@@ -199,6 +208,8 @@ class TelegramBotNotifier:
         self._poll_timeout_seconds = poll_timeout_seconds
         self._on_polling_fatal = on_polling_fatal
         self._event_search = event_search
+        self._timezone_name = timezone_name
+        self._bot_id: int | None = None
         self._bot_username: str | None = None
         self._poll_task: asyncio.Task[None] | None = None
         self._poll_ready = asyncio.Event()
@@ -215,6 +226,7 @@ class TelegramBotNotifier:
         delivery_retry_max_seconds: float = 30.0,
         on_polling_fatal: Callable[[], Awaitable[object]] | None = None,
         event_search: EventSearch | None = None,
+        timezone_name: str = "UTC",
     ) -> TelegramBotNotifier:
         load_dotenv()
         token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -229,6 +241,7 @@ class TelegramBotNotifier:
             delivery_retry_max_seconds=delivery_retry_max_seconds,
             on_polling_fatal=on_polling_fatal,
             event_search=event_search,
+            timezone_name=timezone_name,
         )
 
     async def start(self) -> None:
@@ -249,6 +262,7 @@ class TelegramBotNotifier:
             raise ConfigurationError("Telegram Bot API getMe response has no valid bot ID")
         self._bot_username = _optional_text(bot_user.get("username"))
         await _run_blocking(self._store.select_bot, bot_id)
+        self._bot_id = bot_id
         webhook_url = webhook.get("url")
         if isinstance(webhook_url, str) and webhook_url:
             raise ConfigurationError(
@@ -373,7 +387,7 @@ class TelegramBotNotifier:
                 await self._reply_to_command(
                     chat_id,
                     command,
-                    "Вкажіть місце, наприклад: /events галицьке",
+                    EVENTS_USAGE_REPLY,
                 )
                 return
 
@@ -381,27 +395,26 @@ class TelegramBotNotifier:
             user_id = _optional_int(sender_data.get("id"))
             if user_id is None or user_id != chat_id:
                 LOGGER.warning("Ignoring /events command without a valid private-chat sender")
-                await self._reply_to_command(
-                    chat_id, command, "Не вдалося підтвердити ваш Telegram акаунт."
-                )
+                await self._reply_to_command(chat_id, command, EVENTS_INVALID_SENDER_REPLY)
                 return
             try:
                 if self._event_search is None:
                     raise EventSearchError("Event history search is not configured")
-                if self._bot_username is None:
-                    bot_user = await self._api.get_me()
-                    self._bot_username = _optional_text(bot_user.get("username"))
+                await self._prepare_event_replies()
                 if self._bot_username is None:
                     raise EventSearchError("The bot has no username")
-                count = await self._event_search.count_matches(
-                    user_id, self._bot_username, location
+                excluded_replies = await _run_blocking(
+                    self._store.event_reply_fingerprints, chat_id
+                )
+                result = await self._event_search.find_matches(
+                    user_id, self._bot_username, location, excluded_replies
                 )
             except EventSearchAccessDenied:
                 LOGGER.warning("Denied /events command for chat_id=%s", chat_id)
                 await self._reply_to_command(
                     chat_id,
                     command,
-                    "Пошук доступний лише власнику підключеного Telegram акаунта.",
+                    EVENTS_ACCESS_DENIED_REPLY,
                 )
                 return
             except (EventSearchError, NotificationError, RPCError, OSError, ValueError) as error:
@@ -410,11 +423,10 @@ class TelegramBotNotifier:
                     chat_id,
                     type(error).__name__,
                 )
-                await self._reply_to_command(
-                    chat_id, command, "Не вдалося виконати пошук. Спробуйте пізніше."
-                )
+                await self._reply_to_command(chat_id, command, EVENTS_SEARCH_ERROR_REPLY)
                 return
 
+            count = result.count if result is not None else 0
             user = _safe_log_value(username) if username and username.strip() else str(user_id)
             LOGGER.info(
                 "User(%s) requested events for location(%s). Matches: %d",
@@ -422,6 +434,15 @@ class TelegramBotNotifier:
                 json.dumps(_safe_log_value(location, max_chars=4096), ensure_ascii=False),
                 count,
             )
+            reply = render_event_search_result(result, timezone_name=self._timezone_name)
+            for part in split_event_search_reply(reply):
+                if not await self._reply_to_command(chat_id, command, part):
+                    await self._reply_to_command(
+                        chat_id,
+                        command,
+                        "Не вдалося повністю надіслати результат пошуку. Спробуйте ще раз.",
+                    )
+                    break
             return
 
         await _run_blocking(self._store.open)
@@ -459,7 +480,23 @@ class TelegramBotNotifier:
 
         await self._reply_to_command(chat_id, command, reply)
 
-    async def _reply_to_command(self, chat_id: int, command: str, reply: str) -> None:
+    async def _prepare_event_replies(self) -> None:
+        if self._bot_id is not None:
+            return
+        bot_user = await self._api.get_me()
+        bot_id = bot_user.get("id")
+        if isinstance(bot_id, bool) or not isinstance(bot_id, int):
+            raise EventSearchError("Telegram Bot API getMe response has no valid bot ID")
+        await _run_blocking(self._store.open)
+        await _run_blocking(self._store.select_bot, bot_id)
+        self._bot_id = bot_id
+        self._bot_username = _optional_text(bot_user.get("username"))
+
+    async def _reply_to_command(self, chat_id: int, command: str, reply: str) -> bool:
+        if command == "/events":
+            await self._prepare_event_replies()
+            # Record before sending: Telegram may deliver even if the request times out.
+            await _run_blocking(self._store.record_event_reply, chat_id, reply)
         reply_delivered = await self._send_with_retries(
             chat_id,
             reply,
@@ -473,6 +510,7 @@ class TelegramBotNotifier:
                 command,
                 chat_id,
             )
+        return reply_delivered
 
     async def close(self) -> None:
         if self._closed:

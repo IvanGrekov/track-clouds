@@ -44,6 +44,7 @@ def build_notifier(client: TelegramClient, config: MonitorConfig) -> Notifier:
             delivery_retry_max_seconds=config.delivery_retry_max_seconds,
             on_polling_fatal=client.disconnect,
             event_search=TelegramEventSearch(client),
+            timezone_name=config.timezone,
         )
     return TelegramDialogNotifier(client, config.notify_to)
 

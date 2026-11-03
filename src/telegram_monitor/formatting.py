@@ -10,8 +10,23 @@ from .models import ConfigurationError, MessageSnapshot
 
 if TYPE_CHECKING:
     from .ai_observer import AIObservationReport
+    from .event_search import EventSearchResult
 
 TELEGRAM_MESSAGE_LIMIT = 4_096
+
+EVENTS_USAGE_REPLY = "Вкажіть місце, наприклад: /events галицьке"
+EVENTS_INVALID_SENDER_REPLY = "Не вдалося підтвердити ваш Telegram акаунт."
+EVENTS_ACCESS_DENIED_REPLY = "Пошук доступний лише власнику підключеного Telegram акаунта."
+EVENTS_SEARCH_ERROR_REPLY = "Не вдалося виконати пошук. Спробуйте пізніше."
+
+LEGACY_EVENT_REPLIES = frozenset(
+    (
+        EVENTS_USAGE_REPLY,
+        EVENTS_INVALID_SENDER_REPLY,
+        EVENTS_ACCESS_DENIED_REPLY,
+        EVENTS_SEARCH_ERROR_REPLY,
+    )
+)
 
 _TECHNICAL_STATUS_DESCRIPTIONS = {
     AIObservationTechnicalStatus.TIMEOUT: (
@@ -53,6 +68,41 @@ def _format_time(value: datetime, timezone_name: str) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
     return value.astimezone(timezone).strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def render_event_search_result(result: EventSearchResult | None, *, timezone_name: str) -> str:
+    if result is None:
+        return "Кількість співпадінь за останні 10 днів: 0. Last message: відсутнє"
+    first = _format_time(result.first_date, timezone_name)
+    last = _format_time(result.last_date, timezone_name)
+    return (
+        f"Кількість співпадінь за період {first} – {last}: {result.count}. "
+        f"Last message:\n{result.last_message_json}"
+    )
+
+
+def split_event_search_reply(text: str) -> tuple[str, ...]:
+    def utf16_length(value: str) -> int:
+        return len(value.encode("utf-16-le")) // 2
+
+    if utf16_length(text) <= TELEGRAM_MESSAGE_LIMIT:
+        return (text,)
+
+    prefix = "[Продовження]\n"
+    suffix = "\n[Кінець частини]"
+    limit = TELEGRAM_MESSAGE_LIMIT - utf16_length(prefix + suffix)
+    chunks: list[str] = []
+    start = 0
+    length = 0
+    for index, character in enumerate(text):
+        size = 2 if ord(character) > 0xFFFF else 1
+        if length + size > limit:
+            chunks.append(text[start:index])
+            start = index
+            length = 0
+        length += size
+    chunks.append(text[start:])
+    return tuple((prefix if index else "") + chunk + suffix for index, chunk in enumerate(chunks))
 
 
 def _truncate(value: str, limit: int) -> str:

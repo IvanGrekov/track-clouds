@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Barrier
 
-from telegram_monitor.subscriber_store import Subscriber, SubscriberStore, SubscriptionResult
+import pytest
+
+import telegram_monitor.subscriber_store as subscriber_store
+from telegram_monitor.subscriber_store import (
+    Subscriber,
+    SubscriberStore,
+    SubscriptionResult,
+    event_reply_fingerprint,
+)
 
 
 def _subscriber(chat_id: int) -> Subscriber:
@@ -58,6 +67,39 @@ def test_store_persists_and_isolates_each_bot(tmp_path: Path) -> None:
     assert reopened.list_chat_ids() == (2,)
     assert reopened.get_next_update_offset() == 75
     reopened.close()
+
+
+def test_event_reply_fingerprints_are_scoped_persistent_and_expire(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = datetime(2026, 8, 6, 12, 0, tzinfo=UTC)
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:
+            return now
+
+    monkeypatch.setattr(subscriber_store, "datetime", FrozenDatetime)
+    database = str(tmp_path / "subscribers.sqlite3")
+    store = SubscriberStore(database)
+    store.open()
+    store.select_bot(100)
+    store.record_event_reply(1, "first")
+    store.record_event_reply(2, "other chat")
+    store.select_bot(200)
+    store.record_event_reply(1, "other bot")
+    store.close()
+
+    store = SubscriberStore(database)
+    store.open()
+    store.select_bot(100)
+    assert store.event_reply_fingerprints(1) == frozenset({event_reply_fingerprint("first")})
+    assert store.event_reply_fingerprints(2) == frozenset({event_reply_fingerprint("other chat")})
+    store.select_bot(200)
+    assert store.event_reply_fingerprints(1) == frozenset({event_reply_fingerprint("other bot")})
+    now += timedelta(days=11, seconds=1)
+    assert store.event_reply_fingerprints(1) == frozenset()
+    store.close()
 
 
 def test_two_connections_cannot_claim_the_last_slot(tmp_path: Path) -> None:

@@ -9,10 +9,13 @@ from telegram_monitor.ai_models import (
     AIObservationTechnicalStatus,
     AIReasonCode,
 )
+from telegram_monitor.event_search import EventSearchResult
 from telegram_monitor.formatting import (
     TELEGRAM_MESSAGE_LIMIT,
     build_message_link,
+    render_event_search_result,
     render_notification,
+    split_event_search_reply,
 )
 from telegram_monitor.models import MessageSnapshot
 
@@ -67,6 +70,41 @@ def test_builds_public_and_private_message_links() -> None:
     assert build_message_link(-1001234567890, 42, "@public_chat") == ("https://t.me/public_chat/42")
     assert build_message_link(-1001234567890, 42, None) == "https://t.me/c/1234567890/42"
     assert build_message_link(-12345, 42, None) is None
+
+
+def test_renders_event_search_results_in_configured_timezone() -> None:
+    result = EventSearchResult(
+        2,
+        datetime(2026, 8, 6, 12, 30, tzinfo=UTC),
+        datetime(2026, 8, 7, 12, 30, tzinfo=UTC),
+        '{\n  "message": "галицьке"\n}',
+    )
+    assert render_event_search_result(result, timezone_name="Europe/Kyiv") == (
+        "Кількість співпадінь за період 2026-08-06 15:30:00 EEST – "
+        '2026-08-07 15:30:00 EEST: 2. Last message:\n{\n  "message": "галицьке"\n}'
+    )
+    assert render_event_search_result(None, timezone_name="UTC") == (
+        "Кількість співпадінь за останні 10 днів: 0. Last message: відсутнє"
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["x" * 4096, "😀" * 2048, "a" * 4080 + "😀  \n" * 3000, " " * 9000],
+)
+def test_event_replies_split_losslessly_within_utf16_limit(text: str) -> None:
+    parts = split_event_search_reply(text)
+    assert all(len(part.encode("utf-16-le")) // 2 <= TELEGRAM_MESSAGE_LIMIT for part in parts)
+    if len(parts) == 1:
+        assert parts == (text,)
+    else:
+        suffix = "\n[Кінець частини]"
+        prefix = "[Продовження]\n"
+        assert all(part.endswith(suffix) for part in parts)
+        assert all(part.startswith(prefix) for part in parts[1:])
+        contents = [parts[0][: -len(suffix)]]
+        contents.extend(part[len(prefix) : -len(suffix)] for part in parts[1:])
+        assert "".join(contents) == text
 
 
 def test_renders_plain_text_notification_with_local_time() -> None:
