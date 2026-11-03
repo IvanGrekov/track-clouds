@@ -5,6 +5,7 @@ import logging
 import time
 import unicodedata
 from collections import deque
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -44,6 +45,7 @@ class TelegramMonitor:
         notifier: Notifier,
         ai_observer: AIObserver | None = None,
         accept_events_since: datetime | None = None,
+        now: Callable[[], datetime] | None = None,
     ) -> None:
         self._client = client
         self._config = config
@@ -52,6 +54,7 @@ class TelegramMonitor:
         if accept_events_since is not None and accept_events_since.tzinfo is None:
             raise ValueError("accept_events_since must be timezone-aware")
         self._accept_events_since = accept_events_since
+        self._now = now or (lambda: datetime.now(UTC))
         self._registry: SourceRegistry | None = None
         self._deduplicator = RecentMessageCache(config.deduplication_window)
         self._message_log_deduplicator = RecentMessageCache(config.deduplication_window)
@@ -60,6 +63,7 @@ class TelegramMonitor:
         )
         self._startup_buffer: deque[object] = deque()
         self._worker: asyncio.Task[None] | None = None
+        self._notifications_paused = False
         self._event_builder: object | None = None
         self._accepting_events = False
         self._closed = False
@@ -94,7 +98,8 @@ class TelegramMonitor:
         dialogs = await self._client.get_dialogs()
         self._registry = SourceRegistry.from_dialogs(self._config.sources, dialogs)
         await self._notifier.start()
-        self._worker = asyncio.create_task(self._notification_worker(), name="notification-worker")
+        if not self._config.quiet_hours.contains(self._now()):
+            self.resume_notifications()
 
         buffered_events = tuple(self._startup_buffer)
         self._startup_buffer.clear()
@@ -123,41 +128,84 @@ class TelegramMonitor:
             self._event_builder = None
         self._startup_buffer.clear()
 
-        if self._worker is not None:
-            if not discard_pending:
-                flush_timeout = (
-                    self._config.ai_observation.operation_timeout_seconds
-                    + _SHUTDOWN_DELIVERY_GRACE_SECONDS
-                    if self._ai_observer is not None
-                    else _SHUTDOWN_DELIVERY_GRACE_SECONDS
-                )
-                try:
+        if discard_pending or self._notifications_blocked():
+            await self.pause_notifications()
+        elif self._worker is not None:
+            flush_timeout = (
+                self._config.ai_observation.operation_timeout_seconds
+                + _SHUTDOWN_DELIVERY_GRACE_SECONDS
+                if self._ai_observer is not None
+                else _SHUTDOWN_DELIVERY_GRACE_SECONDS
+            )
+            quiet_deadline = False
+            quiet_hours = self._config.quiet_hours
+            if quiet_hours.enabled:
+                current = self._now()
+                if quiet_hours.contains(current):
+                    await self.pause_notifications()
+                    quiet_deadline = True
+                else:
+                    seconds_until_quiet = (
+                        quiet_hours.next_transition(current) - current
+                    ).total_seconds()
+                    if seconds_until_quiet <= flush_timeout:
+                        flush_timeout = seconds_until_quiet
+                        quiet_deadline = True
+            try:
+                if self._worker is not None:
                     await asyncio.wait_for(self._queue.join(), timeout=flush_timeout)
-                except TimeoutError:
+            except TimeoutError:
+                if quiet_deadline:
+                    await self.pause_notifications()
+                else:
                     LOGGER.warning("Timed out while flushing pending notifications")
-            self._worker.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._worker
-            self._worker = None
-            if discard_pending:
-                discarded = 0
-                while True:
-                    try:
-                        pending = self._queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-                    self._deduplicator.release(pending.key)
-                    self._queue.task_done()
-                    discarded += 1
-                LOGGER.info(
-                    "Cancelled unfinished alert processing for quiet hours (discarded_queued=%d)",
-                    discarded,
-                )
+            if self._worker is not None:
+                self._worker.cancel()
+                with suppress(asyncio.CancelledError):
+                    await self._worker
+                self._worker = None
         try:
             await self._notifier.close()
         finally:
             if self._ai_observer is not None:
                 await self._ai_observer.close()
+
+    async def pause_notifications(self) -> None:
+        self._notifications_paused = True
+        if self._worker is not None:
+            if not self._worker.cancelling():
+                self._worker.cancel()
+            try:
+                await asyncio.shield(self._worker)
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
+            self._worker = None
+
+        discarded = 0
+        while True:
+            try:
+                pending = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            self._deduplicator.release(pending.key)
+            self._queue.task_done()
+            discarded += 1
+        LOGGER.info(
+            "Cancelled unfinished alert processing for quiet hours (discarded_queued=%d)",
+            discarded,
+        )
+
+    def resume_notifications(self) -> None:
+        self._notifications_paused = False
+        if not self._closed and self._worker is None:
+            self._worker = asyncio.create_task(
+                self._notification_worker(), name="notification-worker"
+            )
+
+    def _notifications_blocked(self) -> bool:
+        return self._notifications_paused or self._config.quiet_hours.contains(self._now())
 
     async def handle_event(self, event: object) -> None:
         """Filter and enqueue without network awaits, keeping memory bounded."""
@@ -168,6 +216,8 @@ class TelegramMonitor:
             return
         registry = self._registry
         if registry is None:
+            if self._event_is_outside_active_window(event):
+                return
             if len(self._startup_buffer) >= self._config.startup_buffer_capacity:
                 self._startup_buffer.popleft()
                 self._dropped_notifications += 1
@@ -253,6 +303,9 @@ class TelegramMonitor:
         quiet_hours = self._config.quiet_hours
         if not quiet_hours.enabled and self._accept_events_since is None:
             return False
+        current = self._now()
+        if self._notifications_paused or quiet_hours.contains(current):
+            return True
         message_date = getattr(event, "date", None)
         if not isinstance(message_date, datetime):
             LOGGER.warning("Ignoring Telegram event without a valid quiet-hours timestamp")
@@ -261,7 +314,11 @@ class TelegramMonitor:
             message_date = message_date.replace(tzinfo=UTC)
         if quiet_hours.contains(message_date):
             return True
-        return self._accept_events_since is not None and message_date < self._accept_events_since
+        cutoff = self._accept_events_since
+        if quiet_hours.enabled:
+            last_quiet_end = quiet_hours.most_recent_end(current)
+            cutoff = max(cutoff, last_quiet_end) if cutoff is not None else last_quiet_end
+        return cutoff is not None and message_date < cutoff
 
     def _log_message(
         self,
@@ -309,7 +366,13 @@ class TelegramMonitor:
             key = pending.key
             alert_prepared = False
             try:
+                if self._event_is_outside_active_window(pending.snapshot):
+                    self._deduplicator.release(key)
+                    continue
                 ai_observation = await self._observe(pending)
+                if self._event_is_outside_active_window(pending.snapshot):
+                    self._deduplicator.release(key)
+                    continue
                 notification = render_notification(
                     pending.snapshot,
                     timezone_name=self._config.timezone,
@@ -443,6 +506,8 @@ class TelegramMonitor:
 
     async def _deliver_with_retries(self, key: MessageKey, notification: str) -> bool:
         for attempt in range(1, self._config.delivery_attempts + 1):
+            if self._notifications_blocked():
+                return False
             try:
                 await self._notifier.send(notification)
                 return True

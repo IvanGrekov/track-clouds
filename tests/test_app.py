@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -8,6 +10,7 @@ import pytest
 
 import telegram_monitor.app as app
 from telegram_monitor.ai_observer import UnavailableAIObserver, build_ai_observer
+from telegram_monitor.event_search import TelegramEventSearch
 from telegram_monitor.models import (
     AIObservationConfig,
     ConfigurationError,
@@ -78,7 +81,7 @@ class FakeMonitor:
         config: MonitorConfig,
         notifier: FakeNotifier,
         ai_observer: FakeObserver | None,
-        accept_events_since: datetime | None,
+        now: Callable[[], datetime],
         events: list[str],
         fail_prepare: bool = False,
     ) -> None:
@@ -86,7 +89,7 @@ class FakeMonitor:
         self.config = config
         self.notifier = notifier
         self.ai_observer = ai_observer
-        self.accept_events_since = accept_events_since
+        self.now = now
         self._events = events
         self._fail_prepare = fail_prepare
 
@@ -107,6 +110,12 @@ class FakeMonitor:
             if self.ai_observer is not None:
                 await self.ai_observer.close()
 
+    async def pause_notifications(self) -> None:
+        self._events.append("monitor.pause")
+
+    def resume_notifications(self) -> None:
+        self._events.append("monitor.resume")
+
 
 def _patch_runtime(
     monkeypatch: pytest.MonkeyPatch,
@@ -121,6 +130,26 @@ def _patch_runtime(
     )
     monkeypatch.setattr(app, "create_client", lambda credentials: client)
     monkeypatch.setattr(app, "build_notifier", lambda built_client, config: notifier)
+
+
+def test_bot_notifier_uses_the_existing_client_for_event_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient([])
+    notifier = FakeNotifier([])
+    captured: dict[str, object] = {}
+
+    def create_notifier(database_path: str, **kwargs: object) -> FakeNotifier:
+        captured.update(kwargs)
+        return notifier
+
+    monkeypatch.setattr(app.TelegramBotNotifier, "from_environment", create_notifier)
+    result = app.build_notifier(client, replace(_config(), notification_mode="bot"))
+
+    assert result is notifier
+    search = captured["event_search"]
+    assert isinstance(search, TelegramEventSearch)
+    assert search._client is client
 
 
 @pytest.mark.asyncio
@@ -311,41 +340,55 @@ async def test_run_monitor_closes_owned_resources_after_prepare_failure(
 
 
 @pytest.mark.asyncio
-async def test_run_monitor_stays_offline_when_started_during_quiet_hours(
+async def test_run_monitor_stays_connected_when_started_during_quiet_hours(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class StopTest(RuntimeError):
-        pass
+    events: list[str] = []
+    waiting = asyncio.Event()
+    disconnected = asyncio.Event()
+    client = FakeClient(events)
+    notifier = FakeNotifier(events)
 
-    def fail_client_creation(credentials: object) -> None:
-        del credentials
-        raise AssertionError("Telegram client must not be created during quiet hours")
+    async def run_until_disconnected() -> None:
+        events.append("client.run")
+        await disconnected.wait()
 
-    async def stop_sleep(seconds: float) -> None:
+    async def wait_for_transition(seconds: float) -> None:
         assert seconds == 5 * 60 * 60
-        raise StopTest
+        waiting.set()
+        await asyncio.Event().wait()
 
-    monkeypatch.setattr(app, "create_client", fail_client_creation)
+    monkeypatch.setattr(client, "run_until_disconnected", run_until_disconnected)
+    _patch_runtime(monkeypatch, client=client, notifier=notifier)
+    monkeypatch.setattr(
+        app, "TelegramMonitor", lambda **kwargs: FakeMonitor(events=events, **kwargs)
+    )
     config = MonitorConfig(
         sources=(SourceRule(peer="@source", keywords=("road",)),),
         quiet_hours=QuietHoursConfig(enabled=True),
     )
 
-    with pytest.raises(StopTest):
-        await app.run_monitor(
+    task = asyncio.create_task(
+        app.run_monitor(
             config,
             now=lambda: datetime(2026, 8, 22, 23, 0, tzinfo=UTC),
-            sleep=stop_sleep,
+            sleep=wait_for_transition,
         )
+    )
+    await asyncio.wait_for(waiting.wait(), timeout=1)
+    assert "client.connect" in events
+    assert "client.run" in events
+    assert "monitor.pause" in events
+    assert "client.disconnect" not in events
+    disconnected.set()
+    await asyncio.wait_for(task, timeout=1)
+    assert events[-3:] == ["monitor.close", "notifier.close", "client.disconnect"]
 
 
 @pytest.mark.asyncio
-async def test_run_monitor_cancels_active_session_at_quiet_hours_boundary(
+async def test_run_monitor_pauses_and_resumes_without_reconnecting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class StopTest(RuntimeError):
-        pass
-
     events: list[str] = []
 
     class BlockingClient(FakeClient):
@@ -364,17 +407,16 @@ async def test_run_monitor_cancels_active_session_at_quiet_hours_boundary(
     class AdvancingClock:
         def __init__(self) -> None:
             self.current = datetime(2026, 8, 22, 4, 0, tzinfo=UTC)
-            self.sleeps: list[float] = []
+            self.sleeps: asyncio.Queue[float] = asyncio.Queue()
+            self.advance: asyncio.Queue[None] = asyncio.Queue()
 
         def now(self) -> datetime:
             return self.current
 
         async def sleep(self, seconds: float) -> None:
-            self.sleeps.append(seconds)
-            if len(self.sleeps) == 1:
-                self.current += timedelta(seconds=seconds)
-                return
-            raise StopTest
+            await self.sleeps.put(seconds)
+            await self.advance.get()
+            self.current += timedelta(seconds=seconds)
 
     clock = AdvancingClock()
     client = BlockingClient(events)
@@ -402,14 +444,23 @@ async def test_run_monitor_cancels_active_session_at_quiet_hours_boundary(
         ai_observation=AIObservationConfig(enabled=True),
     )
 
-    with pytest.raises(StopTest):
-        await app.run_monitor(config, now=clock.now, sleep=clock.sleep)
-
+    task = asyncio.create_task(app.run_monitor(config, now=clock.now, sleep=clock.sleep))
+    assert await asyncio.wait_for(clock.sleeps.get(), timeout=1) == 18.5 * 60 * 60
+    assert events.count("monitor.resume") == 1
+    await clock.advance.put(None)
+    assert await asyncio.wait_for(clock.sleeps.get(), timeout=1) == 5.5 * 60 * 60
+    assert events.count("monitor.pause") == 1
+    assert "client.disconnect" not in events
+    assert notifier.close_calls == 0
+    await clock.advance.put(None)
+    assert await asyncio.wait_for(clock.sleeps.get(), timeout=1) == 18.5 * 60 * 60
+    assert events.count("monitor.resume") == 2
+    client._disconnected.set()
+    await asyncio.wait_for(task, timeout=1)
     assert len(monitors) == 1
-    assert clock.sleeps == [18.5 * 60 * 60, 5.5 * 60 * 60]
-    assert "monitor.close.discard" in events
+    assert events.count("client.connect") == 1
     assert events[-4:] == [
-        "monitor.close.discard",
+        "monitor.close",
         "notifier.close",
         "observer.close",
         "client.disconnect",

@@ -38,7 +38,7 @@ def _parse_quiet_hours_clock(value: object, field_name: str) -> tuple[str, int]:
 
 @dataclass(frozen=True, slots=True)
 class QuietHoursConfig:
-    """Daily interval during which all external monitor activity is suspended."""
+    """Daily interval during which monitored messages and alerts are discarded."""
 
     enabled: bool = False
     start: str = "22:30"

@@ -11,7 +11,8 @@ from telethon import TelegramClient
 from .ai_observer import AIObserver, build_ai_observer
 from .client import create_client
 from .credentials import TelegramCredentials
-from .models import ConfigurationError, MonitorConfig
+from .event_search import TelegramEventSearch
+from .models import ConfigurationError, MonitorConfig, QuietHoursConfig
 from .notifier import Notifier, TelegramBotNotifier, TelegramDialogNotifier
 from .service import TelegramMonitor
 
@@ -42,7 +43,7 @@ def build_notifier(client: TelegramClient, config: MonitorConfig) -> Notifier:
             delivery_retry_base_seconds=config.delivery_retry_base_seconds,
             delivery_retry_max_seconds=config.delivery_retry_max_seconds,
             on_polling_fatal=client.disconnect,
-            quiet_hours=config.quiet_hours,
+            event_search=TelegramEventSearch(client),
         )
     return TelegramDialogNotifier(client, config.notify_to)
 
@@ -58,12 +59,10 @@ async def connect_authorized(client: TelegramClient) -> None:
 async def _run_active_monitor(
     config: MonitorConfig,
     *,
-    stop_at: datetime | None,
-    accept_events_since: datetime | None,
     now: _Now,
     sleep: _Sleep,
-) -> bool:
-    """Run one connected monitor session; return true after a quiet-hours stop."""
+) -> None:
+    """Run one connected monitor session, including quiet-hours transitions."""
 
     credentials = TelegramCredentials.from_environment()
     client = create_client(credentials)
@@ -72,7 +71,6 @@ async def _run_active_monitor(
     monitor: TelegramMonitor | None = None
     run_task: asyncio.Task[None] | None = None
     transition_task: asyncio.Task[None] | None = None
-    discard_pending = False
 
     try:
         notifier = build_notifier(client, config)
@@ -82,7 +80,7 @@ async def _run_active_monitor(
             config=config,
             notifier=notifier,
             ai_observer=ai_observer,
-            accept_events_since=accept_events_since,
+            now=now,
         )
         monitor.start_capture()
         await connect_authorized(client)
@@ -90,36 +88,26 @@ async def _run_active_monitor(
         me = await client.get_me()
         LOGGER.info("Connected as Telegram account %s", getattr(me, "id", "unknown"))
         LOGGER.info("Monitor is ready; press Ctrl+C to stop")
-        if stop_at is None:
+        if not config.quiet_hours.enabled:
             await client.run_until_disconnected()
-            return False
+            return
 
         run_task = asyncio.create_task(
             client.run_until_disconnected(),
             name="telegram-monitor-connection",
         )
         transition_task = asyncio.create_task(
-            _sleep_until(stop_at, now=now, sleep=sleep),
-            name="quiet-hours-start-timer",
+            _manage_quiet_hours(monitor, config.quiet_hours, now=now, sleep=sleep),
+            name="quiet-hours-timer",
         )
         done, _ = await asyncio.wait(
             (run_task, transition_task),
             return_when=asyncio.FIRST_COMPLETED,
         )
-        if run_task in done:
-            await run_task
-            return False
-
-        await transition_task
-        discard_pending = True
-        quiet_hours = config.quiet_hours
-        LOGGER.info(
-            "Quiet hours started (%s-%s %s); cancelling unfinished alerts",
-            quiet_hours.start,
-            quiet_hours.end,
-            quiet_hours.timezone,
-        )
-        return True
+        if transition_task in done:
+            await transition_task
+            raise RuntimeError("Quiet-hours timer stopped unexpectedly")
+        await run_task
     finally:
         if transition_task is not None and not transition_task.done():
             transition_task.cancel()
@@ -130,10 +118,7 @@ async def _run_active_monitor(
                 # TelegramMonitor owns both the notifier and the optional observer
                 # once construction succeeds. Its close order stops the worker before
                 # closing either network client.
-                if discard_pending:
-                    await monitor.close(discard_pending=True)
-                else:
-                    await monitor.close()
+                await monitor.close()
             else:
                 # Construction can fail after one or both resources are built. Close
                 # unowned resources here without allowing one close failure to leak the
@@ -162,35 +147,30 @@ async def run_monitor(
     sleep: _Sleep = asyncio.sleep,
 ) -> None:
     config.validate_for_run()
-    quiet_hours = config.quiet_hours
-    if not quiet_hours.enabled:
-        await _run_active_monitor(
-            config,
-            stop_at=None,
-            accept_events_since=None,
-            now=now,
-            sleep=sleep,
-        )
-        return
+    await _run_active_monitor(config, now=now, sleep=sleep)
 
+
+async def _manage_quiet_hours(
+    monitor: TelegramMonitor,
+    quiet_hours: QuietHoursConfig,
+    *,
+    now: _Now,
+    sleep: _Sleep,
+) -> None:
     while True:
         current = now().astimezone(UTC)
-        transition = quiet_hours.next_transition(current)
-        if quiet_hours.contains(current):
+        is_quiet = quiet_hours.contains(current)
+        if is_quiet:
             LOGGER.info(
-                "Quiet hours active; Telegram and OpenAI clients are offline until %s",
-                transition.isoformat().replace("+00:00", "Z"),
+                "Quiet hours active (%s-%s %s); discarding alerts",
+                quiet_hours.start,
+                quiet_hours.end,
+                quiet_hours.timezone,
             )
-            await _sleep_until(transition, now=now, sleep=sleep)
-            LOGGER.info("Quiet hours ended; reconnecting")
+            await monitor.pause_notifications()
+        else:
+            monitor.resume_notifications()
+        current = now().astimezone(UTC)
+        if quiet_hours.contains(current) != is_quiet:
             continue
-
-        stopped_for_quiet_hours = await _run_active_monitor(
-            config,
-            stop_at=transition,
-            accept_events_since=quiet_hours.most_recent_end(current),
-            now=now,
-            sleep=sleep,
-        )
-        if not stopped_for_quiet_hours:
-            return
+        await _sleep_until(quiet_hours.next_transition(current), now=now, sleep=sleep)

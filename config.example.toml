@@ -10,8 +10,8 @@ bot_subscriber_limit = 10
 
 timezone = "Europe/Kyiv"
 
-# Optional daily hard pause. While enabled, Telegram and OpenAI clients are closed, unfinished
-# alerts are discarded, and messages/commands created during the interval are never replayed.
+# Optional daily alert pause. Clients stay connected and bot commands work as usual;
+# monitored messages and unfinished alerts during the interval are discarded rather than replayed.
 [quiet_hours]
 enabled = false
 start = "22:30"
