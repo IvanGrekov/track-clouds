@@ -149,7 +149,7 @@ timezone = "UTC"
 Інтервал включає `22:30` і не включає `04:00`. На початку quiet hours monitor негайно
 скасовує незавершені AI та delivery operations, відкидає queued alerts, закриває Telethon і
 Telegram Bot API clients. О `04:00` він створює нові clients і підключається знову. Завдяки
-timestamp cutoff нічні повідомлення, нічні `/start` і `/stop`, а також alert, скасований перед
+timestamp cutoff нічні повідомлення, нічні `/start`, `/stop` і `/events`, а також alert, скасований перед
 паузою, після reconnect не відтворюються. Subscriber database та Bot API offset залишаються
 на persistent storage.
 
@@ -524,6 +524,15 @@ timezone = "Europe/Kyiv"
 користувач одразу отримає відповідь
 `Максимальна кількість користувачів перевищена (ліміт: 10)`.
 
+Команда `/events галицьке` приймає назву місця та записує INFO-лог
+`User("username") requested events for location("галицьке")`; якщо username відсутній,
+використовується user ID. Місце може складатися з кількох слів. Поки що команда лише записує
+лог: вона не шукає події та не надсилає відповідь на коректний запит. Без назви місця бот
+відповідає прикладом використання. Команда доступна в приватному чаті незалежно від підписки.
+Керувальні символи й зайві пробіли в логу нормалізуються. За бажанням оновіть список команд
+через `/setcommands` у `@BotFather`, зберігши наявні команди та додавши `events`, щоб показувати
+її в меню; введення команди вручну працює і без цього.
+
 Команди приймаються лише в приватному чаті з ботом. Для одного token запускайте лише один
 екземпляр monitor: Telegram не дозволяє одночасно використовувати `getUpdates` у кількох
 процесах або разом з активним webhook. Якщо webhook налаштований, застосунок завершить старт
@@ -593,6 +602,7 @@ application `LOG_LEVEL=DEBUG`, щоб request options, private policy та messa
 
 ```text
 New user (chat_id=123, user_id=123, username=@example, first_name=Name)
+User("example") requested events for location("галицьке")
 Skip new message - 2026-08-06T12:29:00+03:00
 Match new message - 2026-08-06T12:30:00+03:00: message text
 Removed user (chat_id=123, user_id=123, username=@example, first_name=Name, reason=/stop)

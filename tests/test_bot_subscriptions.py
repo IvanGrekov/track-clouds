@@ -116,6 +116,7 @@ async def test_non_commands_and_group_commands_are_ignored() -> None:
 
     await notifier.process_update(_update(1, 101, "/start", chat_type="group"))
     await notifier.process_update(_update(2, 101, "hello"))
+    await notifier.process_update(_update(3, 101, "/events галицьке", chat_type="group"))
 
     assert calls == 0
     assert store.list_chat_ids() == ()
@@ -123,8 +124,79 @@ async def test_non_commands_and_group_commands_are_ignored() -> None:
 
 
 @pytest.mark.asyncio
-async def test_commands_received_during_quiet_hours_are_discarded() -> None:
+async def test_events_logs_location_and_username_or_user_id(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="telegram_monitor.notifier")
+    notifier = TelegramBotNotifier("123:secret", ":memory:")
+
+    await notifier.process_update(_update(1, 101, "/events галицьке"))
+    update = _update(2, 102, ' /events@ExampleBot  Нове Місто "центр"\nдорога ')
+    message = update["message"]
+    assert isinstance(message, dict)
+    message["from"] = {"id": 202}
+    await notifier.process_update(update)
+    update = _update(3, 103, "/events " + "а" * 150)
+    message = update["message"]
+    assert isinstance(message, dict)
+    message.pop("from")
+    await notifier.process_update(update)
+
+    assert [record.getMessage() for record in caplog.records] == [
+        'User("user101") requested events for location("галицьке")',
+        'User("202") requested events for location("Нове Місто \\"центр\\" дорога")',
+        f'User("103") requested events for location("{"а" * 150}")',
+    ]
+    await notifier.close()
+
+
+@pytest.mark.asyncio
+async def test_events_without_location_replies_with_usage(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    replies: list[tuple[int, str]] = []
+    caplog.set_level(logging.INFO, logger="telegram_monitor.notifier")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        replies.append((payload["chat_id"], payload["text"]))
+        return httpx.Response(200, json={"ok": True, "result": {}})
+
+    notifier = TelegramBotNotifier(
+        "123:secret",
+        ":memory:",
+        transport=httpx.MockTransport(handler),
+    )
+    await notifier.process_update(_update(1, 101, "/events"))
+    await notifier.process_update(_update(2, 102, "/events \u200b"))
+
+    assert replies == [
+        (101, "Вкажіть місце, наприклад: /events галицьке"),
+        (102, "Вкажіть місце, наприклад: /events галицьке"),
+    ]
+    assert not any("requested events" in record.getMessage() for record in caplog.records)
+    await notifier.close()
+
+
+@pytest.mark.asyncio
+async def test_events_does_not_change_subscriptions() -> None:
+    store = SubscriberStore(":memory:")
+    store.open()
+    store.select_bot(999)
+    notifier = TelegramBotNotifier("123:secret", ":memory:", store=store)
+
+    await notifier.process_update(_update(1, 101, "/events галицьке"))
+
+    assert store.list_chat_ids() == ()
+    await notifier.close()
+
+
+@pytest.mark.asyncio
+async def test_commands_received_during_quiet_hours_are_discarded(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     replies: list[int] = []
+    caplog.set_level(logging.INFO, logger="telegram_monitor.notifier")
 
     async def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
@@ -148,9 +220,14 @@ async def test_commands_received_during_quiet_hours_are_discarded() -> None:
     await notifier.process_update(
         _update(2, 102, "/start", sent_at=datetime(2026, 8, 23, 4, 0, tzinfo=UTC))
     )
+    await notifier.process_update(
+        _update(3, 103, "/events галицьке", sent_at=datetime(2026, 8, 22, 23, 0, tzinfo=UTC))
+    )
 
     assert store.list_chat_ids() == (102,)
     assert replies == [102]
+    assert "Ignoring Bot API /events command received during quiet hours" in caplog.text
+    assert "requested events" not in caplog.text
     await notifier.close()
 
 
@@ -212,7 +289,16 @@ async def test_poller_processes_command_and_persists_next_offset(
         assert method == "getUpdates"
         get_updates_payloads.append(payload)
         if len(get_updates_payloads) == 1:
-            return httpx.Response(200, json={"ok": True, "result": [_update(42, 101, "/start")]})
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "result": [
+                        _update(42, 101, "/start"),
+                        _update(43, 101, "/events галицьке"),
+                    ],
+                },
+            )
         second_poll_started.set()
         await keep_polling.wait()
         return httpx.Response(200, json={"ok": True, "result": []})
@@ -229,11 +315,12 @@ async def test_poller_processes_command_and_persists_next_offset(
     await asyncio.wait_for(second_poll_started.wait(), timeout=1)
 
     assert store.list_chat_ids() == (101,)
-    assert store.get_next_update_offset() == 43
+    assert store.get_next_update_offset() == 44
     assert "offset" not in get_updates_payloads[0]
-    assert get_updates_payloads[1]["offset"] == 43
+    assert get_updates_payloads[1]["offset"] == 44
+    assert 'User("user101") requested events for location("галицьке")' in caplog.text
     assert (
-        "Bot command polling started; Accepting /start and /stop "
+        "Bot command polling started; Accepting /start, /stop and /events "
         "(subscriber limit: 10); Current subscribers: 1" in caplog.text
     )
     assert "Bot subscribers:" not in caplog.text
